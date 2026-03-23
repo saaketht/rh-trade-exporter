@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Cron wrapper — runs hood.py and sends alerts on failure.
-# Usage: crontab -e → 5 16 * * 1-5 /home/gener/rh-trade-exporter/run.sh
+# Usage: crontab -e → 5 16 * * 1-5 /path/to/rh-trade-exporter/vps/run.sh
 
 set -euo pipefail
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DIR="$(dirname "$SCRIPT_DIR")"
 cd "$DIR"
 
 LOG="$DIR/cron.log"

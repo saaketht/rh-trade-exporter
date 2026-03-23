@@ -1,6 +1,6 @@
 # RH Options Trade Exporter
 
-Export your Robinhood options trade history to structured CSVs with execution timestamps to the second, automatic open/close pairing, underlying asset OHLC, and VIX data. Designed for day traders (like me) who maintain trading journals and need granular data that Robinhood's UI and PDF confirmations don't provide.
+Export your Robinhood options trade history to structured CSVs with execution timestamps to the second, automatic open/close pairing, underlying asset OHLC, and VIX data. Designed for day traders (like me!) who maintain trading journals and need granular data that Robinhood's UI and PDF confirmations don't provide.
 
 ## Why This Exists
 
@@ -251,17 +251,35 @@ Delta is point-in-time. It only populates for same-day exports run before contra
 
 ## Automated / Scheduled Runs
 
-The script can run unattended via cron on a VPS. Example crontab entry (assumes VPS is set to America/New_York):
+The script can run unattended via cron on a VPS using the wrapper in `vps/run.sh`, which handles logging and failure alerts (Discord webhook + optional email).
 
+**Setup on VPS:**
+
+```bash
+# Clone and install
+git clone git@github.com:saaketh/rh-trade-exporter.git
+cd rh-trade-exporter
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# Copy in your token and accounts cache
+# (or run once with --token and --save-token --account-numbers)
+
+# Set up log rotation
+sudo cp vps/logrotate.conf /etc/logrotate.d/rh-trade-exporter
+
+# Add to crontab (crontab -e)
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR/WEBHOOK
+5 16 * * 1-5 /path/to/rh-trade-exporter/vps/run.sh
 ```
-5 16 * * 1-5 cd /path/to/rh-trade-exporter && .venv/bin/python hood.py --after-date $(date -d '-1 day' +%Y-%m-%d) --symbol SPY >> cron.log 2>&1
-```
 
-This runs at 4:05 PM ET every weekday (5 min after market close for settlement). You'll need:
+This runs at 4:05 PM ET every weekday (5 min after market close). On failure, it posts the last 20 lines of log to Discord.
 
+**Requirements:**
 1. `.rh_token` and `.rh_accounts.json` present in the project directory
 2. A Python venv with dependencies installed
 3. A valid auth token (currently manual refresh — lasts ~2 weeks in practice)
+4. VPS timezone set to `America/New_York` (or adjust cron hours for UTC)
 
 ## License
 
