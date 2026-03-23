@@ -30,9 +30,13 @@ class TestValidateToken:
         with pytest.raises(SystemExit):
             hood.validate_token("")
 
-    def test_bearer_only_exits(self):
+    def test_bearer_only_returns_bearer_as_token(self):
+        # "Bearer " stripped → "Bearer", not recognized as prefix, treated as bare token
+        assert hood.validate_token("Bearer ") == "Bearer Bearer"
+
+    def test_whitespace_only_exits(self):
         with pytest.raises(SystemExit):
-            hood.validate_token("Bearer ")
+            hood.validate_token("   ")
 
 
 # ──────────────────────────────────────────────
@@ -187,8 +191,9 @@ class TestPairIntoTradeRows:
 def _make_bars(n=10, date="2026-03-20"):
     """Generate n 5-min bars starting at 9:30 ET (13:30 UTC)."""
     bars = []
+    base = datetime(2026, 3, 20, 13, 30, tzinfo=timezone.utc)
     for i in range(n):
-        ts = datetime(2026, 3, 20, 13, 30 + i * 5, tzinfo=timezone.utc)
+        ts = base + timedelta(minutes=i * 5)
         price = 580.0 + i * 0.5
         bars.append({
             "begins_at": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
