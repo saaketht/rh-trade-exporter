@@ -1,6 +1,6 @@
-# Robinhood Options Trade Exporter
+# RH Options Trade Exporter
 
-Export your Robinhood options trade history to structured CSVs — with execution timestamps to the second, automatic open/close pairing, underlying asset OHLC, and VIX data. Designed for day traders who maintain trading journals and need granular data that Robinhood's UI and PDF confirmations don't provide.
+Export your Robinhood options trade history to structured CSVs with execution timestamps to the second, automatic open/close pairing, underlying asset OHLC, and VIX data. Designed for day traders who maintain trading journals and need granular data that Robinhood's UI and PDF confirmations don't provide.
 
 ## Why This Exists
 
