@@ -122,15 +122,15 @@ python hood.py --token "Bearer ..."
 
 ### Multiple Accounts (Margin + Cash)
 
-Robinhood's `/accounts/` API endpoint often does not return cash sub-accounts. If you have both a margin and a cash account, the script will only see your margin account by default.
+> **⚠️ Important:** Robinhood's `/accounts/` API endpoint **does not return cash sub-accounts**. This is a known limitation of their API with no workaround. If you have both a margin and a cash account, the script will only see your margin account unless you manually provide both account numbers.
 
-**To fix this, pass both account numbers on your first run:**
+**You must pass both account numbers on your first run:**
 
 ```bash
 python hood.py --token "Bearer ..." --account-numbers "111111111,222222222"
 ```
 
-The script caches them to `.rh_accounts.json`, so subsequent runs auto-detect both accounts without the flag.
+The script caches them to `.rh_accounts.json`, so subsequent runs use both accounts automatically. If you only see trades from one account, this is almost certainly why.
 
 **To find your cash account number:**
 - Check the Robinhood app → Settings → Account Info
@@ -248,6 +248,20 @@ Intraday 5-minute bars from Robinhood only go back ~5 trading days. Trades older
 
 **Delta column is blank**
 Delta is point-in-time. It only populates for same-day exports run before contracts expire. For 0DTE, run the script before 4pm ET.
+
+## Automated / Scheduled Runs
+
+The script can run unattended via cron on a VPS. Example crontab entry (assumes VPS is set to America/New_York):
+
+```
+5 16 * * 1-5 cd /path/to/rh-trade-exporter && .venv/bin/python hood.py --after-date $(date -d '-1 day' +%Y-%m-%d) --symbol SPY >> cron.log 2>&1
+```
+
+This runs at 4:05 PM ET every weekday (5 min after market close for settlement). You'll need:
+
+1. `.rh_token` and `.rh_accounts.json` present in the project directory
+2. A Python venv with dependencies installed
+3. A valid auth token (currently manual refresh — lasts ~2 weeks in practice)
 
 ## License
 
