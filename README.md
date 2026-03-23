@@ -1,12 +1,12 @@
 # RH Options Trade Exporter
 
-Export your Robinhood options trade history to structured CSVs with execution timestamps to the second, automatic open/close pairing, underlying asset OHLC, and VIX data. Designed for day traders who maintain trading journals and need granular data that Robinhood's UI and PDF confirmations don't provide.
+Export your Robinhood options trade history to structured CSVs with execution timestamps to the second, automatic open/close pairing, underlying asset OHLC, and VIX data. Designed for day traders (like me) who maintain trading journals and need granular data that Robinhood's UI and PDF confirmations don't provide.
 
 ## Why This Exists
 
 Robinhood has no aggregated trade export. You can download individual trade confirmations (one PDF per trading day, no CSV option), but there's no way to get a consolidated history across multiple days. The PDFs also omit execution times beyond the minute, which matters for scalps and 0DTE options.
 
-This script talks directly to Robinhood's API using a session token from your browser — no third-party auth libraries, no stored credentials, no dependencies you can't audit in 5 minutes.
+This script talks directly to Robinhood's API using a session token from your browser — no third-party auth libraries, no stored credentials, no crazy dependencies.
 
 ## Output Files
 
@@ -22,6 +22,8 @@ The script produces up to six CSVs in your output directory:
 | `failed.csv` | Failed orders (if any) |
 
 ### Trade CSV Columns
+
+These are the columns I use for journaling.
 
 | Column | Source | Description |
 |---|---|---|
@@ -79,7 +81,7 @@ pip install requests yfinance pandas
 
 It looks like: `Bearer <random-string>`
 
-The token expires in ~24 hours.
+The token should expire in ~24 hours (but most likely not for much longer...).
 
 ### Token Storage
 
