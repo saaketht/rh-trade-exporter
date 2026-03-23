@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+outputs/
+plans/
+
+.rh_token
+.rh_accounts.json
+.rh_instrument_cache.json
+rh_raw_orders.json
+*.xlsx
