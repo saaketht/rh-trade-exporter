@@ -6,6 +6,7 @@ Uses: bonfire unified transfers, Gold subscription fees, dividends, portfolio eq
 Shares .rh_token with hood.py.
 """
 
+import argparse
 import json
 import requests
 import sys
@@ -46,7 +47,7 @@ def paginate(url: str, hdrs: dict) -> list:
     return results
 
 
-def main():
+def main(as_json=False):
     token = load_token()
     hdrs = headers(token)
 
@@ -220,6 +221,29 @@ def main():
     # ── 6. Summary ──
     net_deposited = deposits_completed - withdrawals_completed
     net_deposited_with_pending = (deposits_completed + deposits_pending) - (withdrawals_completed + withdrawals_pending)
+    cost_basis = net_deposited - total_gold + total_div + total_referral
+    pnl = equity - cost_basis
+    pnl_pct = (pnl / deposits_completed * 100) if deposits_completed else 0
+    total_return = equity + withdrawals_completed - deposits_completed
+    tr_pct = (total_return / deposits_completed * 100) if deposits_completed else 0
+
+    # --json: emit structured JSON and exit
+    if as_json:
+        print(json.dumps({
+            "deposits": round(deposits_completed, 2),
+            "withdrawals": round(withdrawals_completed, 2),
+            "net_deposited": round(net_deposited, 2),
+            "gold_fees": round(total_gold, 2),
+            "dividends": round(total_div, 2),
+            "referral_grants": round(total_referral, 2),
+            "net_cash_basis": round(cost_basis, 2),
+            "current_equity": round(equity, 2),
+            "all_time_pnl": round(pnl, 2),
+            "all_time_pnl_pct": round(pnl_pct, 1),
+            "total_return": round(total_return, 2),
+            "total_return_pct": round(tr_pct, 1),
+        }))
+        return
 
     print(f"\n{'=' * 75}")
     print("📋 SUMMARY (completed transactions only)")
@@ -231,17 +255,12 @@ def main():
     print(f"  Dividends:         +${total_div:>10,.2f}")
     print(f"  Referral grants:   +${total_referral:>10,.2f}")
     print(f"  ─────────────────────────────────")
-    cost_basis = net_deposited - total_gold + total_div + total_referral
     print(f"  Net cash basis:     ${cost_basis:>10,.2f}")
     print(f"  Current equity:     ${equity:>10,.2f}")
     print(f"  ─────────────────────────────────")
-    pnl = equity - cost_basis
-    pnl_pct = (pnl / deposits_completed * 100) if deposits_completed else 0
     emoji = "🟢" if pnl >= 0 else "🔴"
     print(f"  {emoji} All-time P/L:     ${pnl:>10,.2f}  ({pnl_pct:+.1f}% on ${deposits_completed:,.2f} deposited)")
 
-    total_return = equity + withdrawals_completed - deposits_completed
-    tr_pct = (total_return / deposits_completed * 100) if deposits_completed else 0
     tr_emoji = "🟢" if total_return >= 0 else "🔴"
     print(f"  {tr_emoji} Total return:     ${total_return:>10,.2f}  ({tr_pct:+.1f}%)")
     print(f"       (equity + withdrawals - deposits, includes fees/dividends/referrals)")
@@ -257,4 +276,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--json", action="store_true", help="Output summary as JSON")
+    args = parser.parse_args()
+    main(as_json=args.json)
