@@ -10,6 +10,7 @@ import argparse
 import json
 import requests
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -230,22 +231,28 @@ def main(as_json=False):
     total_return = equity + withdrawals_completed - deposits_completed
     tr_pct = (total_return / deposits_completed * 100) if deposits_completed else 0
 
-    # --json: emit structured JSON and exit
+    # Always append snapshot to JSONL
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "deposits": round(deposits_completed, 2),
+        "withdrawals": round(withdrawals_completed, 2),
+        "net_deposited": round(net_deposited, 2),
+        "gold_fees": round(total_gold, 2),
+        "dividends": round(total_div, 2),
+        "referral_grants": round(total_referral, 2),
+        "net_cash_basis": round(cost_basis, 2),
+        "current_equity": round(equity, 2),
+        "all_time_pnl": round(pnl, 2),
+        "all_time_pnl_pct": round(pnl_pct, 1),
+        "total_return": round(total_return, 2),
+        "total_return_pct": round(tr_pct, 1),
+    }
+    out_file = SCRIPT_DIR / "outputs" / "cash_flow.jsonl"
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_file, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
     if as_json:
-        print(json.dumps({
-            "deposits": round(deposits_completed, 2),
-            "withdrawals": round(withdrawals_completed, 2),
-            "net_deposited": round(net_deposited, 2),
-            "gold_fees": round(total_gold, 2),
-            "dividends": round(total_div, 2),
-            "referral_grants": round(total_referral, 2),
-            "net_cash_basis": round(cost_basis, 2),
-            "current_equity": round(equity, 2),
-            "all_time_pnl": round(pnl, 2),
-            "all_time_pnl_pct": round(pnl_pct, 1),
-            "total_return": round(total_return, 2),
-            "total_return_pct": round(tr_pct, 1),
-        }))
         return
 
     print(f"\n{'=' * 75}")
