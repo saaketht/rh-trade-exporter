@@ -51,18 +51,21 @@ def main(as_json=False):
     token = load_token()
     hdrs = headers(token)
 
+    # Suppress all verbose output in JSON mode
+    log = (lambda *a, **k: None) if as_json else print
+
     # ── Validate token ──
     r = requests.get(f"{API_BASE}/user/", headers=hdrs)
     if r.status_code == 401:
-        print("❌ Token expired. Grab a fresh one from browser DevTools.")
+        print("❌ Token expired. Grab a fresh one from browser DevTools.", file=sys.stderr)
         sys.exit(1)
 
-    print("🏦 Cash Flow Summary")
-    print("=" * 75)
+    log("🏦 Cash Flow Summary")
+    log("=" * 75)
 
     # ── 1. Unified Transfers (bonfire) ──
-    print("\n📤📥 Transfers (bonfire unified)")
-    print("-" * 75)
+    log("\n📤📥 Transfers (bonfire unified)")
+    log("-" * 75)
     transfers = paginate(f"{BONFIRE_BASE}/paymenthub/unified_transfers/", hdrs)
 
     deposits_completed = 0.0
@@ -98,7 +101,7 @@ def main(as_json=False):
             label = "  ✓"
 
         suffix = "  (internal, excluded)" if is_internal else ""
-        print(f"{label} {dt}  {flow}  ${amt:>10,.2f}  {state}{suffix}")
+        log(f"{label} {dt}  {flow}  ${amt:>10,.2f}  {state}{suffix}")
 
         if state == "failed":
             continue
@@ -116,27 +119,27 @@ def main(as_json=False):
             else:
                 withdrawals_completed += amt
 
-    print(f"\n  Deposits:    ${deposits_completed:>10,.2f} completed   ${deposits_pending:>10,.2f} pending")
-    print(f"  Withdrawals: ${withdrawals_completed:>10,.2f} completed   ${withdrawals_pending:>10,.2f} pending")
+    log(f"\n  Deposits:    ${deposits_completed:>10,.2f} completed   ${deposits_pending:>10,.2f} pending")
+    log(f"  Withdrawals: ${withdrawals_completed:>10,.2f} completed   ${withdrawals_pending:>10,.2f} pending")
     if internal_total:
-        print(f"  Internal:    ${internal_total:>10,.2f} (excluded — inter-account moves)")
+        log(f"  Internal:    ${internal_total:>10,.2f} (excluded — inter-account moves)")
 
     # ── 2. Gold Fees ──
-    print(f"\n💳 Gold Subscription Fees")
-    print("-" * 75)
+    log(f"\n💳 Gold Subscription Fees")
+    log("-" * 75)
     fees = paginate(f"{API_BASE}/subscription/subscription_fees/", hdrs)
 
     total_gold = 0.0
     for f in fees:
         amt = float(f["amount"])
         total_gold += amt
-        print(f"  {f['date']}  ${amt:>6,.2f}  {f['state']}")
+        log(f"  {f['date']}  ${amt:>6,.2f}  {f['state']}")
 
-    print(f"\n  Total Gold: ${total_gold:>10,.2f} ({len(fees)} months)")
+    log(f"\n  Total Gold: ${total_gold:>10,.2f} ({len(fees)} months)")
 
     # ── 3. Dividends ──
-    print(f"\n💰 Dividends")
-    print("-" * 75)
+    log(f"\n💰 Dividends")
+    log("-" * 75)
     divs = paginate(f"{API_BASE}/dividends/", hdrs)
 
     total_div = 0.0
@@ -144,16 +147,16 @@ def main(as_json=False):
         amt = float(d["amount"])
         state = d["state"]
         if state == "voided":
-            print(f"  {d['payable_date']}  ${amt:>8,.2f}  {state} (not counted)")
+            log(f"  {d['payable_date']}  ${amt:>8,.2f}  {state} (not counted)")
             continue
         total_div += amt
-        print(f"  {d['payable_date']}  ${amt:>8,.2f}  {state}")
+        log(f"  {d['payable_date']}  ${amt:>8,.2f}  {state}")
 
-    print(f"\n  Total dividends: ${total_div:>10,.2f}")
+    log(f"\n  Total dividends: ${total_div:>10,.2f}")
 
     # ── 4. Referral Stock Grants ──
-    print(f"\n🎁 Referral Stock Grants")
-    print("-" * 75)
+    log(f"\n🎁 Referral Stock Grants")
+    log("-" * 75)
     refs = paginate(f"{API_BASE}/midlands/referral/", hdrs)
 
     total_referral = 0.0
@@ -170,23 +173,23 @@ def main(as_json=False):
             cost = float(s.get("cost_basis", 0))
             s_state = s.get("state", "?")
             if s_state in ("failed", "voided"):
-                print(f"  {dt}  {sym}  ${cost:>8,.2f}  {s_state} (not counted)")
+                log(f"  {dt}  {sym}  ${cost:>8,.2f}  {s_state} (not counted)")
                 continue
             total_referral += cost
-            print(f"  {dt}  {sym}  ${cost:>8,.2f}  {s_state}")
+            log(f"  {dt}  {sym}  ${cost:>8,.2f}  {s_state}")
 
         if cash_reward:
             cash_amt = float(cash_reward.get("amount", 0))
             c_state = cash_reward.get("state", "?")
             if c_state not in ("failed", "voided"):
                 total_referral += cash_amt
-                print(f"  {dt}  CASH  ${cash_amt:>8,.2f}  {c_state}")
+                log(f"  {dt}  CASH  ${cash_amt:>8,.2f}  {c_state}")
 
-    print(f"\n  Total referral grants: ${total_referral:>10,.2f}")
+    log(f"\n  Total referral grants: ${total_referral:>10,.2f}")
 
     # ── 5. Current Equity (both accounts) ──
-    print(f"\n📊 Current Portfolio")
-    print("-" * 75)
+    log(f"\n📊 Current Portfolio")
+    log("-" * 75)
 
     # Get account numbers from cache
     accts_file = SCRIPT_DIR / ".rh_accounts.json"
@@ -214,9 +217,9 @@ def main(as_json=False):
             eq = cash  # cash-only account
 
         equity += eq
-        print(f"  {acct_type:<12} ({acct_num}):  ${eq:>10,.2f}")
+        log(f"  {acct_type:<12} ({acct_num}):  ${eq:>10,.2f}")
 
-    print(f"\n  Total equity: ${equity:>10,.2f}")
+    log(f"\n  Total equity: ${equity:>10,.2f}")
 
     # ── 6. Summary ──
     net_deposited = deposits_completed - withdrawals_completed
