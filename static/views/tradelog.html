@@ -1,0 +1,180 @@
+<h1>Trade Log</h1>
+<p class="page-sub">All trades with sorting, filtering, and journal notes</p>
+
+<div class="log-controls">
+  <select id="log-filter">
+    <option value="">All Trades</option>
+    <option value="SPY" selected>SPY Only</option>
+    <option value="OTHER">Other Symbols</option>
+  </select>
+  <input type="text" id="log-search" placeholder="Search trades..." style="flex:1;max-width:300px">
+</div>
+
+<div id="log-grid" style="height:600px;width:100%" class="ag-theme-alpine-dark"></div>
+
+<div class="log-summary" id="log-summary"></div>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.3/styles/ag-grid.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.3/styles/ag-theme-alpine.css">
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.3/dist/ag-grid-community.min.js"></script>
+
+<style>
+.ag-theme-alpine-dark {
+  --ag-background-color: #1a1d27;
+  --ag-header-background-color: #14161e;
+  --ag-odd-row-background-color: #1e2130;
+  --ag-row-hover-color: #262938;
+  --ag-border-color: #2a2d3a;
+  --ag-foreground-color: #e0e0e0;
+  --ag-header-foreground-color: #aaa;
+  --ag-secondary-foreground-color: #888;
+  --ag-font-family: 'Inter', -apple-system, sans-serif;
+  --ag-font-size: 12px;
+  --ag-row-height: 36px;
+  --ag-header-height: 40px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.cell-win { color: #4ade80; }
+.cell-loss { color: #f87171; }
+.cell-be { color: #fbbf24; }
+.notes-cell { cursor: text; }
+.notes-cell:hover { background: rgba(129, 140, 248, 0.1) !important; }
+</style>
+
+<script>
+(async function() {
+  const [allTrades, notes] = await Promise.all([
+    apiFetch('/api/trades'),
+    apiFetch('/api/notes')
+  ]);
+
+  // Merge notes into trades
+  allTrades.forEach(t => {
+    t.note = notes[t.group_id] || '';
+  });
+
+  const plStr = v => v == null ? '' : (v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString());
+
+  const columnDefs = [
+    { field: 'trade_num', headerName: '#', width: 60, sort: 'asc' },
+    { field: 'date', headerName: 'Date', width: 110 },
+    { field: 'day', headerName: 'Day', width: 60 },
+    { field: 'symbol', headerName: 'Symbol', width: 80 },
+    { field: 'type', headerName: 'Type', width: 70,
+      cellClass: p => p.value === 'Put' ? 'cell-win' : '' },
+    { field: 'strike', headerName: 'Strike', width: 80,
+      valueFormatter: p => p.value != null ? '$' + p.value : '' },
+    { field: 'qty', headerName: 'Qty', width: 55 },
+    { field: 'entry_time', headerName: 'Entry', width: 90 },
+    { field: 'exit_time', headerName: 'Exit', width: 90 },
+    { field: 'hold_time_min', headerName: 'Hold (min)', width: 90 },
+    { field: 'entry_cost', headerName: 'Entry Cost', width: 100,
+      valueFormatter: p => p.value != null ? '$' + Math.abs(p.value) : '' },
+    { field: 'risk', headerName: 'Risk', width: 80,
+      valueFormatter: p => p.value != null ? '$' + p.value : '' },
+    { field: 'exit_credit', headerName: 'Exit Credit', width: 100,
+      valueFormatter: p => p.value != null ? '$' + p.value : '' },
+    { field: 'pl', headerName: 'P/L ($)', width: 90,
+      cellClass: p => p.value > 0 ? 'cell-win' : p.value < 0 ? 'cell-loss' : 'cell-be',
+      valueFormatter: p => plStr(p.value) },
+    { field: 'pl_pct', headerName: 'P/L %', width: 80,
+      cellClass: p => p.value > 0 ? 'cell-win' : p.value < 0 ? 'cell-loss' : '',
+      valueFormatter: p => p.value != null ? p.value.toFixed(1) + '%' : '' },
+    { field: 'wl', headerName: 'W/L', width: 65,
+      cellClass: p => p.value === 'WIN' ? 'cell-win' : p.value === 'LOSS' ? 'cell-loss' : 'cell-be' },
+    { field: 'vix', headerName: 'VIX', width: 65 },
+    { field: 'delta', headerName: 'Delta', width: 70,
+      valueFormatter: p => p.value != null ? p.value.toFixed(3) : '' },
+    { field: 'group_id', headerName: 'Group', width: 70 },
+    { field: 'note', headerName: 'Notes', minWidth: 200, flex: 1,
+      editable: true, cellClass: 'notes-cell',
+      cellEditor: 'agLargeTextCellEditor',
+      cellEditorParams: { maxLength: 500, rows: 3 } },
+  ];
+
+  let gridApi;
+  const gridOptions = {
+    columnDefs,
+    rowData: allTrades,
+    defaultColDef: {
+      sortable: true,
+      filter: true,
+      resizable: true,
+    },
+    animateRows: true,
+    getRowStyle: params => {
+      if (params.data.wl === 'WIN') return { background: 'rgba(74,222,128,0.04)' };
+      if (params.data.wl === 'LOSS') return { background: 'rgba(248,113,113,0.04)' };
+      return null;
+    },
+    onCellValueChanged: async (event) => {
+      if (event.colDef.field === 'note') {
+        const groupId = event.data.group_id;
+        const note = event.newValue || '';
+        try {
+          await apiFetch('/api/notes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ group_id: groupId, note })
+          });
+        } catch (e) {
+          console.error('Failed to save note:', e);
+        }
+      }
+    },
+  };
+
+  const gridDiv = document.getElementById('log-grid');
+  gridApi = agGrid.createGrid(gridDiv, gridOptions);
+
+  function updateSummary() {
+    const rows = [];
+    gridApi.forEachNodeAfterFilter(node => rows.push(node.data));
+    const totalPL = rows.reduce((s, t) => s + (t.pl || 0), 0);
+    const wins = rows.filter(t => t.wl === 'WIN').length;
+    const losses = rows.filter(t => t.wl === 'LOSS').length;
+    const wr = wins + losses > 0 ? (wins / (wins + losses) * 100).toFixed(1) : '0';
+    const winPLs = rows.filter(t => t.wl === 'WIN').map(t => t.pl || 0);
+    const lossPLs = rows.filter(t => t.wl === 'LOSS').map(t => t.pl || 0);
+    const avgWin = winPLs.length ? Math.round(winPLs.reduce((a, b) => a + b, 0) / winPLs.length) : 0;
+    const avgLoss = lossPLs.length ? Math.round(lossPLs.reduce((a, b) => a + b, 0) / lossPLs.length) : 0;
+
+    const plStr2 = v => v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString();
+    document.getElementById('log-summary').innerHTML =
+      `<span>Trades:<span class="val">${rows.length}</span></span>` +
+      `<span>Total P/L:<span class="val ${totalPL >= 0 ? 'g' : 'r'}">${plStr2(Math.round(totalPL))}</span></span>` +
+      `<span>Win Rate:<span class="val">${wr}%</span></span>` +
+      `<span>Avg Win:<span class="val g">${plStr2(avgWin)}</span></span>` +
+      `<span>Avg Loss:<span class="val r">${plStr2(Math.abs(avgLoss))}</span></span>`;
+  }
+
+  // Filter by symbol
+  const filter = document.getElementById('log-filter');
+  filter.addEventListener('change', () => {
+    const val = filter.value;
+    if (val === 'OTHER') {
+      gridApi.setGridOption('rowData', allTrades.filter(t => (t.symbol || '').toUpperCase() !== 'SPY'));
+    } else if (val) {
+      gridApi.setGridOption('rowData', allTrades.filter(t => (t.symbol || '').toUpperCase() === val));
+    } else {
+      gridApi.setGridOption('rowData', allTrades);
+    }
+    updateSummary();
+  });
+
+  // Quick search
+  const search = document.getElementById('log-search');
+  search.addEventListener('input', () => {
+    gridApi.setGridOption('quickFilterText', search.value);
+    updateSummary();
+  });
+
+  // Listen for filter changes from ag-Grid
+  gridApi.addEventListener('filterChanged', updateSummary);
+
+  // Initial summary
+  // Small delay to let grid render
+  setTimeout(updateSummary, 100);
+})();
+</script>

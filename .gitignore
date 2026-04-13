@@ -1,11 +1,13 @@
 .venv/
 __pycache__/
 .pytest_cache/
+.vscode/
 
 outputs/
 plans/
 
 .rh_token
+.server_token
 .rh_accounts.json
 .rh_instrument_cache.json
 rh_raw_orders.json

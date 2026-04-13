@@ -1,0 +1,315 @@
+<h1>Trade Journal Analysis</h1>
+<p class="subtitle" id="analysis-sub">Loading...</p>
+
+<div class="log-controls" style="margin-bottom:20px">
+  <select id="analysis-filter">
+    <option value="">All Trades</option>
+    <option value="SPY" selected>SPY Only</option>
+  </select>
+</div>
+
+<div class="kpi-row" id="analysis-kpis"></div>
+
+<div class="insight" id="analysis-insight" style="display:none">
+  <h3>Key Findings</h3>
+  <p id="analysis-insight-text"></p>
+</div>
+
+<div class="grid">
+  <div class="card full"><h2>Equity Curve (Cumulative P/L)</h2><canvas id="equity"></canvas></div>
+  <div class="card"><h2>Monthly P/L</h2><canvas id="monthly"></canvas></div>
+  <div class="card"><h2>P/L by Day of Week</h2><canvas id="dayPL"></canvas></div>
+  <div class="card"><h2>P/L by Entry Hour</h2><canvas id="hourPL"></canvas></div>
+  <div class="card"><h2>Calls vs Puts</h2><canvas id="typePL"></canvas></div>
+  <div class="card"><h2>VIX Environment</h2><canvas id="vixPL"></canvas></div>
+  <div class="card"><h2>P/L Distribution</h2><canvas id="hist"></canvas></div>
+  <div class="card"><h2>Win Rate by Day of Week</h2><canvas id="dayWR"></canvas></div>
+  <div class="card"><h2>Contract Size vs Outcome</h2><canvas id="qtyPL"></canvas></div>
+  <div class="card full"><h2>Weekly P/L</h2><canvas id="weekly"></canvas></div>
+</div>
+
+<script>
+(async function() {
+  Chart.defaults.color = '#999';
+  Chart.defaults.borderColor = '#2a2d3a';
+  Chart.defaults.font.family = "'Inter',sans-serif";
+
+  const g = '#4ade80', r = '#f87171', b = '#60a5fa', p = '#c084fc', y = '#fbbf24';
+  const charts = [];
+
+  async function render(symbol) {
+    // Destroy existing charts
+    charts.forEach(c => c.destroy());
+    charts.length = 0;
+
+    const url = symbol ? '/api/trades?symbol=' + symbol : '/api/trades';
+    const trades = await apiFetch(url);
+    if (!trades.length) {
+      document.getElementById('analysis-sub').textContent = 'No trades found';
+      return;
+    }
+
+    // Build raw-like array
+    const T = trades.map(t => ({
+      date: t.date, pl: t.pl || 0, type: t.type, day: t.day,
+      hour: t.entry_hour, vix: t.vix, qty: t.qty || 1, wl: t.wl, risk: t.risk || 0
+    }));
+
+    // Cumulative P/L
+    let cum = 0;
+    T.forEach(t => { cum += t.pl; t.cum = cum; });
+
+    const totalPL = cum;
+    const wins = T.filter(t => t.wl === 'WIN');
+    const losses = T.filter(t => t.wl === 'LOSS');
+    const winPLs = wins.map(t => t.pl);
+    const lossPLs = losses.map(t => t.pl);
+    const avgWin = winPLs.length ? Math.round(winPLs.reduce((a,b) => a+b, 0) / winPLs.length) : 0;
+    const avgLoss = lossPLs.length ? Math.round(lossPLs.reduce((a,b) => a+b, 0) / lossPLs.length) : 0;
+    const grossWin = winPLs.reduce((a,b) => a+b, 0);
+    const grossLoss = Math.abs(lossPLs.reduce((a,b) => a+b, 0));
+    const pf = grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : 'N/A';
+    const wr = (wins.length / Math.max(wins.length + losses.length, 1) * 100).toFixed(1);
+
+    // Best/worst day
+    const byDate = {};
+    T.forEach(t => { byDate[t.date] = (byDate[t.date] || 0) + t.pl; });
+    const dailyPLs = Object.values(byDate);
+    const bestDay = Math.max(...dailyPLs);
+    const worstDay = Math.min(...dailyPLs);
+
+    // Max consecutive losses
+    let maxLoss = 0, curLoss = 0;
+    T.forEach(t => { if (t.wl === 'LOSS') { curLoss++; maxLoss = Math.max(maxLoss, curLoss); } else curLoss = 0; });
+
+    const dates = [...new Set(T.map(t => t.date))].sort();
+    const firstDate = dates[0] || '';
+    const lastDate = dates[dates.length - 1] || '';
+    document.getElementById('analysis-sub').textContent =
+      T.length + ' trades \u00b7 ' + firstDate + ' \u2013 ' + lastDate;
+
+    // KPIs
+    const plStr = v => v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString();
+    const kpiRow = document.getElementById('analysis-kpis');
+    kpiRow.innerHTML = [
+      ['Total P/L', plStr(totalPL), totalPL >= 0 ? 'pos' : 'neg'],
+      ['Win Rate', wr + '%', 'neu'],
+      ['Avg Win', plStr(avgWin), 'pos'],
+      ['Avg Loss', plStr(Math.abs(avgLoss)), 'neg'],
+      ['Profit Factor', pf, parseFloat(pf) >= 1 ? 'pos' : 'neg'],
+      ['Best Day', plStr(bestDay), 'pos'],
+      ['Worst Day', plStr(worstDay), 'neg'],
+      ['Max Consec. Losses', maxLoss, 'neg'],
+    ].map(([l, v, c]) => `<div class="kpi"><div class="kpi-label">${l}</div><div class="kpi-value ${c}">${v}</div></div>`).join('');
+
+    // Insight
+    const puts = T.filter(t => t.type === 'Put');
+    const calls = T.filter(t => t.type === 'Call');
+    const putPL = puts.reduce((s, t) => s + t.pl, 0);
+    const callPL = calls.reduce((s, t) => s + t.pl, 0);
+    const putWR = puts.length ? Math.round(puts.filter(t => t.wl === 'WIN').length / puts.filter(t => t.wl !== 'BE').length * 100) : 0;
+    const callWR = calls.length ? Math.round(calls.filter(t => t.wl === 'WIN').length / calls.filter(t => t.wl !== 'BE').length * 100) : 0;
+
+    const insightEl = document.getElementById('analysis-insight');
+    const insightText = document.getElementById('analysis-insight-text');
+    if (T.length >= 20) {
+      insightEl.style.display = '';
+      insightText.innerHTML =
+        `You're <span class="${totalPL >= 0 ? 'pos' : 'neg'}">${plStr(totalPL)}</span> across ${T.length} trades with a ${pf} profit factor. ` +
+        `Avg win ($${Math.abs(avgWin)}) ${Math.abs(avgWin) > Math.abs(avgLoss) ? 'exceeds' : 'trails'} avg loss ($${Math.abs(avgLoss)}). ` +
+        `<span class="pos">Puts</span>: ${puts.length} trades, ${putWR}% WR, ${plStr(putPL)}. ` +
+        `<span class="${callPL >= 0 ? 'pos' : 'neg'}">Calls</span>: ${calls.length} trades, ${callWR}% WR, ${plStr(callPL)}.`;
+    } else {
+      insightEl.style.display = 'none';
+    }
+
+    // 1. Equity Curve
+    charts.push(new Chart(document.getElementById('equity'), {
+      type: 'line',
+      data: {
+        labels: T.map((_, i) => '#' + (i + 1)),
+        datasets: [{
+          data: T.map(t => t.cum),
+          borderWidth: 2, tension: .3, pointRadius: 1.5,
+          pointBackgroundColor: T.map(t => t.cum >= 0 ? g : r),
+          segment: { borderColor: ctx => ctx.p1.parsed.y >= 0 ? g : r },
+          fill: { target: 'origin', above: 'rgba(74,222,128,.08)', below: 'rgba(248,113,113,.08)' }
+        }]
+      },
+      options: { responsive: true, plugins: { legend: { display: false } },
+        scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } }, x: { ticks: { maxTicksLimit: 20 }, grid: { display: false } } } }
+    }));
+
+    // 2. Monthly P/L
+    const monthlyData = {};
+    T.forEach(t => {
+      const m = t.date.substring(0, 7); // YYYY-MM
+      monthlyData[m] = (monthlyData[m] || 0) + t.pl;
+    });
+    const mKeys = Object.keys(monthlyData).sort();
+    const mPL = mKeys.map(k => monthlyData[k]);
+    let mCum = 0;
+    const mCumArr = mPL.map(v => { mCum += v; return mCum; });
+    const mLabels = mKeys.map(k => {
+      const [yr, mo] = k.split('-');
+      return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(mo)-1] + ' ' + yr.slice(2);
+    });
+
+    charts.push(new Chart(document.getElementById('monthly'), {
+      type: 'bar',
+      data: { labels: mLabels, datasets: [
+        { label: 'Monthly P/L', data: mPL, backgroundColor: mPL.map(v => v >= 0 ? g : r), borderRadius: 6, order: 2 },
+        { label: 'Cumulative', data: mCumArr, type: 'line', borderColor: '#818cf8', backgroundColor: 'transparent', pointBackgroundColor: '#818cf8', tension: .3, borderWidth: 2, order: 1 }
+      ] },
+      options: { responsive: true, plugins: { legend: { position: 'bottom' } },
+        scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } }, x: { grid: { display: false } } } }
+    }));
+
+    // 3. P/L by Day
+    const dayOrder = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    const dayPLMap = {}, dayWinMap = {}, dayTotalMap = {};
+    dayOrder.forEach(d => { dayPLMap[d] = 0; dayWinMap[d] = 0; dayTotalMap[d] = 0; });
+    T.forEach(t => {
+      if (t.day in dayPLMap) {
+        dayPLMap[t.day] += t.pl;
+        dayTotalMap[t.day]++;
+        if (t.wl === 'WIN') dayWinMap[t.day]++;
+      }
+    });
+    const dayPLArr = dayOrder.map(d => Math.round(dayPLMap[d]));
+
+    charts.push(new Chart(document.getElementById('dayPL'), {
+      type: 'bar',
+      data: { labels: dayOrder, datasets: [{ data: dayPLArr, backgroundColor: dayPLArr.map(v => v >= 0 ? g : r), borderRadius: 6 }] },
+      options: { responsive: true, plugins: { legend: { display: false } },
+        scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } }, x: { grid: { display: false } } } }
+    }));
+
+    // 4. P/L by Hour
+    const hourMap = {};
+    T.forEach(t => {
+      if (t.hour != null) hourMap[t.hour] = (hourMap[t.hour] || 0) + t.pl;
+    });
+    const hourKeys = Object.keys(hourMap).map(Number).sort((a, b) => a - b);
+    const hourPLArr = hourKeys.map(h => Math.round(hourMap[h]));
+
+    charts.push(new Chart(document.getElementById('hourPL'), {
+      type: 'bar',
+      data: { labels: hourKeys.map(h => h + ':00'), datasets: [{ data: hourPLArr, backgroundColor: hourPLArr.map(v => v >= 0 ? g : r), borderRadius: 6 }] },
+      options: { responsive: true, plugins: { legend: { display: false } },
+        scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } }, x: { grid: { display: false } } } }
+    }));
+
+    // 5. Calls vs Puts
+    charts.push(new Chart(document.getElementById('typePL'), {
+      type: 'bar',
+      data: { labels: [`Calls (${calls.length})`, `Puts (${puts.length})`], datasets: [
+        { label: 'Total P/L', data: [callPL, putPL], backgroundColor: [b, p], borderRadius: 6, barThickness: 60 }
+      ] },
+      options: { responsive: true, plugins: { legend: { display: false },
+        subtitle: { display: true, text: `Calls: ${callWR}% WR, ${plStr(callPL)}  |  Puts: ${putWR}% WR, ${plStr(putPL)}`, color: '#888', font: { size: 12 } } },
+        scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } }, x: { grid: { display: false } } } }
+    }));
+
+    // 6. VIX Environment
+    const vixBuckets = [
+      { label: 'VIX < 22', min: 0, max: 22 },
+      { label: 'VIX 22-26', min: 22, max: 26 },
+      { label: 'VIX 26+', min: 26, max: 999 },
+    ];
+    const vixPLArr = vixBuckets.map(bk => {
+      const filtered = T.filter(t => t.vix >= bk.min && t.vix < bk.max);
+      return Math.round(filtered.reduce((s, t) => s + t.pl, 0));
+    });
+    const vixCounts = vixBuckets.map(bk => T.filter(t => t.vix >= bk.min && t.vix < bk.max).length);
+
+    charts.push(new Chart(document.getElementById('vixPL'), {
+      type: 'bar',
+      data: { labels: vixBuckets.map((bk, i) => bk.label + '\n(' + vixCounts[i] + ' trades)'), datasets: [{
+        data: vixPLArr, backgroundColor: [g, y, r], borderRadius: 6, barThickness: 60
+      }] },
+      options: { responsive: true, plugins: { legend: { display: false } },
+        scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } }, x: { grid: { display: false } } } }
+    }));
+
+    // 7. Histogram
+    const binDefs = [
+      { label: '< -300', min: -Infinity, max: -300 },
+      { label: '-300 to -200', min: -300, max: -200 },
+      { label: '-200 to -100', min: -200, max: -100 },
+      { label: '-100 to 0', min: -100, max: 0 },
+      { label: '0 to 100', min: 0, max: 100 },
+      { label: '100 to 200', min: 100, max: 200 },
+      { label: '200 to 300', min: 200, max: 300 },
+      { label: '300+', min: 300, max: Infinity },
+    ];
+    const binColors = ['#ef4444','#f87171','#fca5a5','#fecaca','#bbf7d0','#86efac','#4ade80','#22c55e'];
+    const binCounts = binDefs.map(bd => T.filter(t => t.pl >= bd.min && t.pl < bd.max).length);
+
+    charts.push(new Chart(document.getElementById('hist'), {
+      type: 'bar',
+      data: { labels: binDefs.map(bd => bd.label), datasets: [{ data: binCounts, backgroundColor: binColors, borderRadius: 4 }] },
+      options: { responsive: true, plugins: { legend: { display: false } },
+        scales: { y: { title: { display: true, text: 'Trades', color: '#888' } }, x: { title: { display: true, text: 'P/L Range ($)', color: '#888' }, grid: { display: false } } } }
+    }));
+
+    // 8. Win Rate by Day
+    const dayWRArr = dayOrder.map(d => dayTotalMap[d] > 0 ? Math.round(dayWinMap[d] / dayTotalMap[d] * 100) : 0);
+
+    charts.push(new Chart(document.getElementById('dayWR'), {
+      type: 'bar',
+      data: { labels: dayOrder, datasets: [{ data: dayWRArr, backgroundColor: dayWRArr.map(v => v >= 50 ? g : v >= 45 ? y : r), borderRadius: 6 }] },
+      options: { responsive: true, plugins: { legend: { display: false } },
+        scales: { y: { max: 100, ticks: { callback: v => v + '%' } }, x: { grid: { display: false } } } }
+    }));
+
+    // 9. Qty vs Outcome
+    const qtyBuckets = [
+      { label: '1 contract', test: q => q === 1 },
+      { label: '2 contracts', test: q => q === 2 },
+      { label: '3 contracts', test: q => q === 3 },
+      { label: '4+ contracts', test: q => q >= 4 },
+    ];
+    const qtyPLArr = qtyBuckets.map(bk => Math.round(T.filter(t => bk.test(t.qty)).reduce((s, t) => s + t.pl, 0)));
+    const qtyCounts = qtyBuckets.map(bk => T.filter(t => bk.test(t.qty)).length);
+    const qtyWins = qtyBuckets.map(bk => T.filter(t => bk.test(t.qty) && t.wl === 'WIN').length);
+
+    charts.push(new Chart(document.getElementById('qtyPL'), {
+      type: 'bar',
+      data: { labels: qtyBuckets.map((bk, i) => bk.label + ` (${qtyCounts[i]})`), datasets: [{ label: 'P/L', data: qtyPLArr, backgroundColor: qtyPLArr.map(v => v >= 0 ? g : r), borderRadius: 6 }] },
+      options: { responsive: true, plugins: { legend: { display: false },
+        subtitle: { display: true, text: qtyBuckets.map((bk, i) => bk.label + ': ' + (qtyCounts[i] > 0 ? Math.round(qtyWins[i] / qtyCounts[i] * 100) : 0) + '% WR').join('  |  '), color: '#888', font: { size: 11 } } },
+        scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } }, x: { grid: { display: false } } } }
+    }));
+
+    // 10. Weekly P/L
+    const weeklyData = {};
+    T.forEach(t => {
+      const d = new Date(t.date);
+      const jan1 = new Date(d.getFullYear(), 0, 1);
+      const weekNum = Math.ceil(((d - jan1) / 86400000 + jan1.getDay() + 1) / 7);
+      const key = d.getFullYear() + '-W' + String(weekNum).padStart(2, '0');
+      weeklyData[key] = (weeklyData[key] || 0) + t.pl;
+    });
+    const wKeys = Object.keys(weeklyData).sort();
+    const wPL = wKeys.map(k => Math.round(weeklyData[k]));
+    const wLabels = wKeys.map(k => {
+      const [yr, w] = k.split('-W');
+      return 'W' + parseInt(w) + ' ' + yr.slice(2);
+    });
+
+    charts.push(new Chart(document.getElementById('weekly'), {
+      type: 'bar',
+      data: { labels: wLabels, datasets: [{ data: wPL, backgroundColor: wPL.map(v => v >= 0 ? g : r), borderRadius: 4 }] },
+      options: { responsive: true, plugins: { legend: { display: false } },
+        scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } }, x: { grid: { display: false }, ticks: { maxRotation: 45 } } } }
+    }));
+  }
+
+  // Initial render
+  const filter = document.getElementById('analysis-filter');
+  await render(filter.value);
+
+  filter.addEventListener('change', () => render(filter.value));
+})();
+</script>

@@ -1,0 +1,227 @@
+<h1>Trading Calendar & Habit Analysis</h1>
+<p class="sub" id="cal-sub">Loading...</p>
+
+<div class="section">
+  <h2>Is It All From One Day?</h2>
+  <div id="concentration" style="background:#1a1d27;border-radius:12px;padding:22px;margin-bottom:16px"></div>
+</div>
+
+<div class="section">
+  <h2>Daily P/L Calendar</h2>
+  <div class="cal-grid" id="calendar"></div>
+</div>
+
+<div class="section">
+  <h2>Habit Patterns</h2>
+  <div class="insight-grid" id="habits"></div>
+</div>
+
+<script>
+(async function() {
+  const days = await apiFetch('/api/trades/daily');
+  const allTrades = await apiFetch('/api/trades?symbol=SPY');
+
+  if (!days.length) {
+    document.getElementById('cal-sub').textContent = 'No data';
+    return;
+  }
+
+  const totalTrades = days.reduce((s, d) => s + d.num_trades, 0);
+  const firstDate = days[0].date;
+  const lastDate = days[days.length - 1].date;
+  document.getElementById('cal-sub').textContent =
+    days.length + ' trading days \u00b7 ' + totalTrades + ' trades \u00b7 ' + firstDate + ' \u2013 ' + lastDate;
+
+  const plStr = v => v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString();
+
+  // --- Profit Concentration ---
+  const totalPL = days.reduce((s, d) => s + d.pl, 0);
+  const sorted = [...days].sort((a, b) => b.pl - a.pl);
+  const withoutBest = totalPL - sorted[0].pl;
+  const withoutTop3 = totalPL - sorted.slice(0, 3).reduce((s, d) => s + d.pl, 0);
+  const withoutTop5 = totalPL - sorted.slice(0, 5).reduce((s, d) => s + d.pl, 0);
+  const maxAbs = Math.max(Math.abs(totalPL), Math.abs(withoutBest), Math.abs(withoutTop3), Math.abs(withoutTop5));
+
+  function barRow(label, val) {
+    const pct = maxAbs > 0 ? Math.max(Math.abs(val) / maxAbs * 100, 2) : 2;
+    const cls = val >= 0 ? 'bar-pos' : 'bar-neg';
+    return `<div class="bar-row">
+      <div class="bar-label">${label}</div>
+      <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%">${plStr(val)}</div></div>
+    </div>`;
+  }
+
+  const concEl = document.getElementById('concentration');
+  concEl.innerHTML =
+    '<p style="font-size:14px;color:#ccc;margin-bottom:16px">What happens when you remove your best days:</p>' +
+    barRow('All ' + days.length + ' days', totalPL) +
+    barRow('Remove best day', withoutBest) +
+    barRow('Remove top 3 days', withoutTop3) +
+    barRow('Remove top 5 days', withoutTop5) +
+    `<p style="font-size:12px;color:#777;margin-top:14px">Without your best day (${plStr(sorted[0].pl)} on ${sorted[0].date}), you'd be at ${plStr(withoutBest)}.</p>`;
+
+  // --- Calendar ---
+  const lookup = {};
+  days.forEach(d => lookup[d.date] = d);
+
+  function getClass(pl) {
+    if (pl === 0) return 'no-trade';
+    if (pl > 0 && pl <= 50) return 'green1';
+    if (pl > 50 && pl <= 200) return 'green2';
+    if (pl > 200 && pl <= 500) return 'green3';
+    if (pl > 500) return 'green4';
+    if (pl < 0 && pl >= -100) return 'red1';
+    if (pl < -100 && pl >= -300) return 'red2';
+    if (pl < -300 && pl >= -600) return 'red3';
+    if (pl < -600) return 'red4';
+    return '';
+  }
+
+  // Determine months to show
+  const monthSet = new Set();
+  days.forEach(d => {
+    const [yr, mo] = d.date.split('-');
+    monthSet.add(parseInt(yr) + '-' + parseInt(mo));
+  });
+  const monthsToShow = [...monthSet].sort().map(s => {
+    const [yr, mo] = s.split('-');
+    return [parseInt(yr), parseInt(mo) - 1]; // JS month is 0-indexed
+  });
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+  const cal = document.getElementById('calendar');
+  monthsToShow.forEach(([yr, mo]) => {
+    const block = document.createElement('div');
+    block.className = 'month-block';
+
+    const mKey = `${yr}-${String(mo + 1).padStart(2, '0')}`;
+    const mDays = days.filter(d => d.date.startsWith(mKey));
+    const mPL = mDays.reduce((s, d) => s + d.pl, 0);
+    const mTrades = mDays.reduce((s, d) => s + d.num_trades, 0);
+    const greenD = mDays.filter(d => d.pl > 0).length;
+    const redD = mDays.filter(d => d.pl < 0).length;
+
+    block.innerHTML = `
+      <div class="month-title">${monthNames[mo]} ${yr}</div>
+      <div class="month-summary">
+        <span class="${mPL >= 0 ? 'g' : 'r'}">${plStr(mPL)}</span> &middot;
+        ${mTrades} trades &middot; ${greenD} green days / ${redD} red days
+      </div>
+      <div class="week-header">${dayNames.map(d => `<span>${d}</span>`).join('')}</div>
+    `;
+
+    const grid = document.createElement('div');
+    grid.className = 'day-grid';
+
+    const firstDay = new Date(yr, mo, 1).getDay();
+    const daysInMonth = new Date(yr, mo + 1, 0).getDate();
+
+    for (let i = 0; i < firstDay; i++) {
+      const empty = document.createElement('div');
+      empty.className = 'day-cell empty';
+      grid.appendChild(empty);
+    }
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = `${yr}-${String(mo + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const cell = document.createElement('div');
+      const data = lookup[dateStr];
+      const dow = new Date(yr, mo, d).getDay();
+
+      if (!data || dow === 0 || dow === 6) {
+        cell.className = 'day-cell no-trade';
+        cell.innerHTML = `<div class="date">${d}</div>`;
+      } else {
+        cell.className = `day-cell ${getClass(data.pl)}`;
+        const plColor = data.pl >= 0 ? 'g' : 'r';
+        cell.innerHTML = `
+          <div class="date">${d}</div>
+          <div class="pl ${plColor}">${data.pl >= 0 ? '+' : ''}${data.pl}</div>
+          <div class="trades">${data.num_trades}t ${data.wins}w</div>
+          <div class="tip">
+            <strong>${dateStr}</strong><br>
+            P/L: <span class="${plColor}">${plStr(data.pl)}</span><br>
+            Trades: ${data.num_trades} &middot; Wins: ${data.wins}/${data.num_trades}<br>
+            Cumulative: ${plStr(data.cumulative_pl)}<br>
+            VIX: ${data.vix || '—'}
+          </div>
+        `;
+      }
+      grid.appendChild(cell);
+    }
+
+    block.appendChild(grid);
+    cal.appendChild(block);
+  });
+
+  // --- Habit Insights (computed from trade-level data) ---
+  const T = allTrades.map(t => ({
+    date: t.date, pl: t.pl || 0, type: t.type, hour: t.entry_hour,
+    wl: t.wl, qty: t.qty || 1, vix: t.vix
+  }));
+
+  const avgTradesPerDay = (totalTrades / days.length).toFixed(1);
+  const greenDays = days.filter(d => d.pl > 0).length;
+  const redDays = days.filter(d => d.pl < 0).length;
+  const medianPL = [...days].sort((a, b) => a.pl - b.pl)[Math.floor(days.length / 2)].pl;
+
+  // Overtrading: days with 6+ trades
+  const heavyDays = days.filter(d => d.num_trades >= 6);
+  const heavyAvg = heavyDays.length ? Math.round(heavyDays.reduce((s, d) => s + d.pl, 0) / heavyDays.length) : 0;
+
+  // Blowup days (> $500 loss)
+  const blowups = days.filter(d => d.pl < -500);
+  const blowupTotal = blowups.reduce((s, d) => s + d.pl, 0);
+
+  // Put vs Call
+  const puts = T.filter(t => t.type === 'Put');
+  const calls = T.filter(t => t.type === 'Call');
+  const putPL = puts.reduce((s, t) => s + t.pl, 0);
+  const callPL = calls.reduce((s, t) => s + t.pl, 0);
+  const putWR = puts.length ? Math.round(puts.filter(t => t.wl === 'WIN').length / puts.filter(t => t.wl !== 'BE').length * 100) : 0;
+  const callWR = calls.length ? Math.round(calls.filter(t => t.wl === 'WIN').length / calls.filter(t => t.wl !== 'BE').length * 100) : 0;
+
+  // Morning vs afternoon
+  const morningPL = T.filter(t => t.hour != null && t.hour < 12).reduce((s, t) => s + t.pl, 0);
+  const afternoonPL = T.filter(t => t.hour != null && t.hour >= 12).reduce((s, t) => s + t.pl, 0);
+
+  // 1-lot percentage
+  const oneLots = T.filter(t => t.qty === 1).length;
+  const oneLotPct = Math.round(oneLots / Math.max(T.length, 1) * 100);
+
+  const habits = document.getElementById('habits');
+  habits.innerHTML = `
+    <div class="insight-card warn">
+      <h3>Overtrading Signal</h3>
+      <p><span class="num y">${avgTradesPerDay} trades/day</span>
+      On days with 6+ trades (${heavyDays.length} days), avg P/L is ${plStr(heavyAvg)}. More trades \u2260 more profit.</p>
+    </div>
+    <div class="insight-card ${greenDays > redDays ? 'good' : 'bad'}">
+      <h3>Your Edge</h3>
+      <p><span class="num ${greenDays > redDays ? 'g' : 'r'}">${Math.round(greenDays / days.length * 100)}% winning days</span>
+      ${greenDays} green days vs ${redDays} red days. Median daily P/L: ${plStr(medianPL)}.</p>
+    </div>
+    <div class="insight-card bad">
+      <h3>Blowup Days</h3>
+      <p><span class="num r">${blowups.length} days > -$500</span>
+      Worst days cost ${plStr(blowupTotal)} total.${blowups.length ? ' Worst: ' + plStr(blowups.sort((a,b) => a.pl - b.pl)[0].pl) + ' on ' + blowups[0].date : ''}</p>
+    </div>
+    <div class="insight-card">
+      <h3>Position Sizing</h3>
+      <p><span class="num w">${oneLotPct}% of trades are 1-lot</span>
+      Biggest wins come from sizing up with conviction on high-confidence setups.</p>
+    </div>
+    <div class="insight-card ${putPL > callPL ? 'good' : 'bad'}">
+      <h3>Put vs Call</h3>
+      <p><span class="num ${putPL >= 0 ? 'g' : 'r'}">${plStr(putPL)} on puts</span>
+      vs ${plStr(callPL)} on calls. Put WR: ${putWR}%, Call WR: ${callWR}%.</p>
+    </div>
+    <div class="insight-card ${afternoonPL < 0 ? 'warn' : 'good'}">
+      <h3>Morning vs Afternoon</h3>
+      <p><span class="num ${afternoonPL >= 0 ? 'g' : 'y'}">${plStr(afternoonPL)} after noon</span>
+      Morning session (before noon): ${plStr(morningPL)}. Afternoon: ${plStr(afternoonPL)}.</p>
+    </div>
+  `;
+})();
+</script>
