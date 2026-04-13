@@ -16,25 +16,32 @@ echo "===== $(date '+%Y-%m-%d %H:%M:%S') =====" >> "$LOG"
 
 # Run the export
 if .venv/bin/python hood.py --after-date "$(date -d '-1 day' +%Y-%m-%d)" --symbol SPY >> "$LOG" 2>&1; then
-    echo "✅ Success" >> "$LOG"
-    exit 0
+    echo "✅ hood.py success" >> "$LOG"
+else
+    EXIT_CODE=$?
+    TAIL=$(tail -20 "$LOG")
+
+    # Discord webhook
+    if [ -n "$DISCORD_WEBHOOK" ]; then
+        MSG="⚠️ **hood.py failed** (exit $EXIT_CODE)\n\`\`\`\n${TAIL:0:1800}\n\`\`\`"
+        curl -s -H "Content-Type: application/json" \
+            -d "{\"content\": \"$MSG\"}" \
+            "$DISCORD_WEBHOOK" > /dev/null 2>&1 || true
+    fi
+
+    # Email failsafe
+    if [ -n "$EMAIL" ]; then
+        echo "$TAIL" | mail -s "hood.py failed (exit $EXIT_CODE)" "$EMAIL" 2>/dev/null || true
+    fi
+
+    exit $EXIT_CODE
 fi
 
-EXIT_CODE=$?
-TAIL=$(tail -20 "$LOG")
-
-# Discord webhook
-if [ -n "$DISCORD_WEBHOOK" ]; then
-    # Truncate to Discord's 2000 char limit
-    MSG="⚠️ **hood.py failed** (exit $EXIT_CODE)\n\`\`\`\n${TAIL:0:1800}\n\`\`\`"
-    curl -s -H "Content-Type: application/json" \
-        -d "{\"content\": \"$MSG\"}" \
-        "$DISCORD_WEBHOOK" > /dev/null 2>&1 || true
+# Run cash flow snapshot
+if .venv/bin/python cash_flow.py --json >> "$LOG" 2>&1; then
+    echo "✅ cash_flow.py success" >> "$LOG"
+else
+    echo "⚠️ cash_flow.py failed (non-fatal)" >> "$LOG"
 fi
 
-# Email failsafe
-if [ -n "$EMAIL" ]; then
-    echo "$TAIL" | mail -s "hood.py failed (exit $EXIT_CODE)" "$EMAIL" 2>/dev/null || true
-fi
-
-exit $EXIT_CODE
+exit 0

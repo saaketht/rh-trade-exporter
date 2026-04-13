@@ -1,0 +1,14 @@
+[Unit]
+Description=rh-trade-exporter dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=saaketh
+WorkingDirectory=/home/saaketh/rh-trade-exporter
+ExecStart=/home/saaketh/rh-trade-exporter/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

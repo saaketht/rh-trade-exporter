@@ -1,0 +1,148 @@
+/* === Reset & Base === */
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:#0f1117;color:#e0e0e0;min-height:100vh}
+
+/* === Top Nav === */
+.top-nav{display:flex;align-items:center;justify-content:space-between;background:#14161e;border-bottom:1px solid #2a2d3a;padding:0 24px;height:52px;position:sticky;top:0;z-index:100}
+.nav-brand{font-size:15px;font-weight:700;color:#fff;letter-spacing:-.3px}
+.nav-tabs{display:flex;gap:4px}
+.nav-tab{padding:8px 16px;font-size:13px;color:#888;cursor:pointer;border-radius:8px;text-decoration:none;transition:all .15s;user-select:none}
+.nav-tab:hover{color:#ccc;background:#1a1d27}
+.nav-tab.active{color:#fff;background:#262938}
+
+/* === App Container === */
+.app-container{padding:24px;max-width:1200px;margin:0 auto}
+.loading{text-align:center;padding:80px 20px;color:#555;font-size:14px}
+
+/* === Colors === */
+.g{color:#4ade80}.r{color:#f87171}.y{color:#fbbf24}.w{color:#fff}.muted{color:#888}
+.pos{color:#4ade80}.neg{color:#f87171}.neu{color:#fff}.warn{color:#fbbf24}
+
+/* === KPI Row === */
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px}
+.kpi{background:#1a1d27;border-radius:10px;padding:16px 18px}
+.kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:#666;margin-bottom:4px}
+.kpi-val,.kpi-value{font-size:24px;font-weight:700}
+
+/* === Cards === */
+.card{background:#1a1d27;border-radius:12px;padding:22px}
+.card h2{font-size:15px;font-weight:600;margin-bottom:16px;color:#ccc}
+
+/* === Grid Layout === */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px}
+.full{grid-column:1/-1}
+canvas{max-height:320px}
+
+/* === Insight Boxes === */
+.insight{background:#1e2130;border-left:3px solid #818cf8;border-radius:0 8px 8px 0;padding:16px 20px;margin-bottom:20px}
+.insight h3{font-size:14px;color:#818cf8;margin-bottom:8px}
+.insight p{font-size:13px;line-height:1.7;color:#aaa}
+
+/* === Section Headers === */
+.section{margin-bottom:32px}
+.section h2{font-size:18px;font-weight:600;color:#ccc;margin-bottom:14px;border-bottom:1px solid #2a2d3a;padding-bottom:8px}
+h1{font-size:24px;font-weight:700;color:#fff;margin-bottom:4px}
+.subtitle,.sub,.page-sub{color:#888;font-size:13px;margin-bottom:24px}
+
+/* === Calendar === */
+.cal-grid{display:grid;gap:16px}
+.month-block{background:#1a1d27;border-radius:12px;padding:18px}
+.month-title{font-size:14px;font-weight:600;color:#aaa;margin-bottom:10px}
+.month-summary{font-size:12px;color:#777;margin-bottom:12px}
+.month-summary span{font-weight:600}
+.week-header{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:4px}
+.week-header span{font-size:10px;color:#555;text-align:center}
+.day-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.day-cell{aspect-ratio:1;border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;position:relative;min-height:48px;cursor:default;transition:transform .15s}
+.day-cell:hover{transform:scale(1.08);z-index:2}
+.day-cell .date{font-size:9px;color:#888;margin-bottom:2px}
+.day-cell .pl{font-weight:700;font-size:11px}
+.day-cell .trades{font-size:8px;color:#999;margin-top:1px}
+.day-cell.empty{background:transparent}
+.day-cell.no-trade{background:#15171f;opacity:.3}
+.day-cell.green1{background:rgba(74,222,128,.12)}
+.day-cell.green2{background:rgba(74,222,128,.25)}
+.day-cell.green3{background:rgba(74,222,128,.45)}
+.day-cell.green4{background:rgba(74,222,128,.7)}
+.day-cell.red1{background:rgba(248,113,113,.12)}
+.day-cell.red2{background:rgba(248,113,113,.25)}
+.day-cell.red3{background:rgba(248,113,113,.45)}
+.day-cell.red4{background:rgba(248,113,113,.7)}
+
+/* Calendar Tooltip */
+.day-cell .tip{display:none;position:absolute;bottom:110%;left:50%;transform:translateX(-50%);background:#262938;border:1px solid #3a3d4a;border-radius:8px;padding:10px 14px;font-size:11px;line-height:1.6;white-space:nowrap;z-index:10;box-shadow:0 4px 16px rgba(0,0,0,.5)}
+.day-cell:hover .tip{display:block}
+
+/* === Insight Cards Grid (Calendar) === */
+.insight-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.insight-card{background:#1a1d27;border-radius:12px;padding:20px;border-left:3px solid #818cf8}
+.insight-card.warn{border-left-color:#fbbf24}
+.insight-card.good{border-left-color:#4ade80}
+.insight-card.bad{border-left-color:#f87171}
+.insight-card h3{font-size:13px;font-weight:600;color:#aaa;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px}
+.insight-card p{font-size:13px;line-height:1.7;color:#999}
+.insight-card .num{font-size:22px;font-weight:700;display:block;margin-bottom:4px}
+.full-width{grid-column:1/-1}
+
+/* === Concentration Bars === */
+.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.bar-label{font-size:12px;color:#888;width:140px;text-align:right;flex-shrink:0}
+.bar-track{flex:1;height:24px;background:#15171f;border-radius:4px;overflow:hidden;position:relative}
+.bar-fill{height:100%;border-radius:4px;display:flex;align-items:center;padding-left:8px;font-size:11px;font-weight:600;color:#fff;min-width:fit-content}
+.bar-fill.bar-pos{background:linear-gradient(90deg,rgba(74,222,128,.3),rgba(74,222,128,.6))}
+.bar-fill.bar-neg{background:linear-gradient(90deg,rgba(248,113,113,.6),rgba(248,113,113,.3))}
+
+/* === Tabs (pretrade sub-tabs) === */
+.tabs{display:flex;gap:6px;margin-bottom:20px}
+.tab{padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;background:#1a1d27;color:#888;border:1px solid transparent;transition:all .15s}
+.tab:hover{color:#ccc}
+.tab.active{background:#262938;color:#fff;border-color:#3a3d4a}
+.tab .badge{font-size:10px;color:#555;margin-left:4px}
+
+/* === Day Cards (pretrade) === */
+.card-grid{display:grid;gap:10px}
+.day-card{background:#1a1d27;border-radius:10px;padding:16px 18px;display:grid;grid-template-columns:90px 1fr 160px 80px;align-items:center;gap:16px;border-left:3px solid transparent;transition:all .15s}
+.day-card:hover{background:#1e2130}
+.day-card.green{border-left-color:#4ade80}
+.day-card.red{border-left-color:#f87171}
+.day-card.flat{border-left-color:#555}
+.card-date{font-size:13px;font-weight:600;color:#ccc}
+.card-date small{display:block;font-size:11px;font-weight:400;color:#666;margin-top:2px}
+.card-market{font-size:12px;color:#888;line-height:1.6}
+.card-market span{color:#aaa}
+.card-stats{font-size:12px;color:#888;line-height:1.6}
+.card-pl{font-size:18px;font-weight:700;text-align:right}
+
+/* === Sort Bar === */
+.sort-bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;font-size:12px;color:#666}
+.sort-bar span{cursor:pointer;padding:4px 10px;border-radius:6px;transition:all .12s}
+.sort-bar span:hover{background:#1a1d27;color:#ccc}
+.sort-bar span.active{background:#262938;color:#fff}
+
+/* === Checklist === */
+.checklist{background:#1a1d27;border-radius:10px;padding:16px 18px;margin-bottom:24px;border:1px solid #2a2d3a}
+.checklist h3{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:#555;margin-bottom:10px}
+.checklist-item{font-size:13px;color:#999;padding:6px 0;display:flex;align-items:center;gap:8px}
+.checklist-item::before{content:'';width:14px;height:14px;border:1.5px solid #3a3d4a;border-radius:4px;flex-shrink:0}
+
+/* === Trade Log (ag-Grid) === */
+.log-controls{display:flex;gap:12px;align-items:center;margin-bottom:16px}
+.log-controls select,.log-controls input{background:#1a1d27;border:1px solid #2a2d3a;color:#e0e0e0;padding:8px 12px;border-radius:8px;font-size:13px}
+.log-controls select:focus,.log-controls input:focus{outline:none;border-color:#818cf8}
+.log-summary{display:flex;gap:24px;margin-top:16px;padding:12px 16px;background:#1a1d27;border-radius:10px;font-size:13px;color:#888}
+.log-summary .val{font-weight:700;color:#fff;margin-left:6px}
+
+/* === Responsive === */
+@media(max-width:900px){
+  .grid{grid-template-columns:1fr}
+  .insight-grid{grid-template-columns:1fr}
+  .day-card{grid-template-columns:1fr;gap:8px}
+  .card-pl{text-align:left}
+  .day-cell{min-height:38px}
+  .day-cell .pl{font-size:9px}
+}
+@media(max-width:600px){
+  .top-nav{flex-direction:column;height:auto;padding:12px}
+  .nav-tabs{margin-top:8px}
+  .app-container{padding:16px}
+}

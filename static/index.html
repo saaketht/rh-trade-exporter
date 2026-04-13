@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trade Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+
+<nav class="top-nav">
+  <div class="nav-brand">Trade Dashboard</div>
+  <div class="nav-tabs">
+    <a class="nav-tab active" data-view="analysis">Analysis</a>
+    <a class="nav-tab" data-view="calendar">Calendar</a>
+    <a class="nav-tab" data-view="pretrade">Pre-Trade</a>
+    <a class="nav-tab" data-view="tradelog">Trade Log</a>
+  </div>
+</nav>
+
+<div id="app" class="app-container"></div>
+
+<script>
+// Token from query param — persist for API calls
+const params = new URLSearchParams(window.location.search);
+const TOKEN = params.get('token') || '';
+
+function apiFetch(url, opts = {}) {
+  const headers = opts.headers || {};
+  if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
+  return fetch(url, { ...opts, headers }).then(r => {
+    if (!r.ok) throw new Error('API error ' + r.status);
+    return r.json();
+  });
+}
+
+let currentView = '';
+
+async function loadView(name) {
+  if (name === currentView) return;
+  currentView = name;
+
+  // Update nav active state
+  document.querySelectorAll('.nav-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.view === name);
+  });
+
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    const resp = await fetch('/static/views/' + name + '.html');
+    if (!resp.ok) throw new Error('Failed to load view');
+    app.innerHTML = await resp.text();
+
+    // Execute scripts in the loaded fragment
+    app.querySelectorAll('script').forEach(old => {
+      const s = document.createElement('script');
+      if (old.src) {
+        s.src = old.src;
+      } else {
+        s.textContent = old.textContent;
+      }
+      old.replaceWith(s);
+    });
+  } catch (e) {
+    app.innerHTML = '<div class="loading" style="color:#f87171">Failed to load view: ' + e.message + '</div>';
+  }
+}
+
+// Nav click handlers
+document.querySelectorAll('.nav-tab').forEach(tab => {
+  tab.addEventListener('click', e => {
+    e.preventDefault();
+    loadView(tab.dataset.view);
+  });
+});
+
+// Load default view
+loadView('analysis');
+</script>
+
+</body>
+</html>

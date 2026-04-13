@@ -1,0 +1,270 @@
+<h1>Pre-Trade Reference</h1>
+<p class="page-sub">Historical performance breakdowns to check before trading</p>
+
+<div class="checklist">
+  <h3>Before you trade</h3>
+  <div class="checklist-item">What's the VIX at right now?</div>
+  <div class="checklist-item">Is there a gap up or gap down from yesterday's close?</div>
+  <div class="checklist-item">Am I trading puts (my edge) or calls (my leak)?</div>
+  <div class="checklist-item">Max 4 trades today — will I actually stop?</div>
+</div>
+
+<div class="tabs" id="pt-tabs">
+  <div class="tab active" data-view="dow">Day of Week</div>
+  <div class="tab" data-view="vix">VIX Level</div>
+  <div class="tab" data-view="hour">Entry Hour</div>
+</div>
+
+<div id="pt-content"></div>
+
+<script>
+(async function() {
+  const trades = await apiFetch('/api/trades?symbol=SPY');
+  if (!trades.length) {
+    document.getElementById('pt-content').innerHTML = '<div class="loading">No trades</div>';
+    return;
+  }
+
+  const T = trades.map(t => ({
+    date: t.date, day: t.day, pl: t.pl || 0, type: t.type,
+    hour: t.entry_hour, vix: t.vix, qty: t.qty || 1, wl: t.wl,
+    risk: t.risk || 0, open: t.open, high: t.high, low: t.low, close: t.close
+  }));
+
+  // Aggregate by date
+  const byDate = {};
+  T.forEach(t => {
+    if (!byDate[t.date]) byDate[t.date] = {
+      date: t.date, day: t.day, o: t.open, h: t.high, l: t.low, c: t.close,
+      vix: t.vix, trades: [], pl: 0, wins: 0, losses: 0, n: 0, puts: 0, calls: 0
+    };
+    const d = byDate[t.date];
+    d.trades.push(t); d.pl += t.pl; d.n++;
+    if (t.wl === 'WIN') d.wins++;
+    if (t.wl === 'LOSS') d.losses++;
+    if (t.type === 'Put') d.puts++; else d.calls++;
+  });
+  const allDays = Object.values(byDate);
+
+  // Aggregate by hour
+  const byHour = {};
+  T.forEach(t => {
+    if (t.hour == null) return;
+    if (!byHour[t.hour]) byHour[t.hour] = { hour: t.hour, trades: [], pl: 0, wins: 0, losses: 0, n: 0 };
+    const h = byHour[t.hour];
+    h.trades.push(t); h.pl += t.pl; h.n++;
+    if (t.wl === 'WIN') h.wins++;
+    if (t.wl === 'LOSS') h.losses++;
+  });
+
+  // Helpers
+  const plStr = v => v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString();
+  const pct = (a, b) => b > 0 ? Math.round(a / b * 100) + '%' : '\u2014';
+  const clr = v => v >= 0 ? 'g' : 'r';
+  const range = d => d.o ? ((d.h - d.l) / d.o * 100).toFixed(1) : '?';
+  const dir = d => d.c > d.o ? 'Bullish' : 'Bearish';
+
+  function makeKpis(items) {
+    return '<div class="kpi-row">' + items.map(([label, val, cls]) =>
+      `<div class="kpi"><div class="kpi-label">${label}</div><div class="kpi-val ${cls || 'w'}">${val}</div></div>`
+    ).join('') + '</div>';
+  }
+
+  function makeCard(d) {
+    const cls = d.pl > 0 ? 'green' : d.pl < 0 ? 'red' : 'flat';
+    return `<div class="day-card ${cls}">
+      <div class="card-date">${d.date}<small>${d.day}</small></div>
+      <div class="card-market">
+        SPY <span>${d.o ? d.o.toFixed(2) : '?'}</span> \u2192 <span class="${d.c >= d.o ? 'g' : 'r'}">${d.c ? d.c.toFixed(2) : '?'}</span> (${dir(d)})<br>
+        Range: <span>${range(d)}%</span>
+      </div>
+      <div class="card-stats">
+        <span>${d.n} trades</span> &middot; ${d.wins}W/${d.losses}L &middot; ${d.puts}P/${d.calls}C<br>
+        VIX: <span>${d.vix || '\u2014'}</span>
+      </div>
+      <div class="card-pl ${clr(d.pl)}">${plStr(d.pl)}</div>
+    </div>`;
+  }
+
+  // Sort state
+  let currentSort = 'date';
+
+  function sortDays(arr) {
+    const s = [...arr];
+    if (currentSort === 'pl') s.sort((a, b) => b.pl - a.pl);
+    else if (currentSort === 'vix') s.sort((a, b) => (b.vix || 0) - (a.vix || 0));
+    else if (currentSort === 'trades') s.sort((a, b) => b.n - a.n);
+    else s.sort((a, b) => a.date.localeCompare(b.date));
+    return s;
+  }
+
+  function sortBar() {
+    return `<div class="sort-bar" id="pt-sort">Sort: ` +
+      ['date', 'pl', 'vix', 'trades'].map(s =>
+        `<span class="${s === currentSort ? 'active' : ''}" data-sort="${s}">${s === 'pl' ? 'P/L' : s.charAt(0).toUpperCase() + s.slice(1)}</span>`
+      ).join('') + '</div>';
+  }
+
+  function bindSort(renderFn) {
+    document.querySelectorAll('#pt-sort span').forEach(s => {
+      s.onclick = () => { currentSort = s.dataset.sort; renderFn(); };
+    });
+  }
+
+  // --- DOW View ---
+  let activeDow = 'Mon';
+  function renderDow() {
+    const dowDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    const tabs = dowDays.map(d => {
+      const dd = allDays.filter(x => x.day === d);
+      return `<div class="tab ${d === activeDow ? 'active' : ''}" data-dow="${d}">${d}<span class="badge">${dd.length}</span></div>`;
+    }).join('');
+
+    const filtered = allDays.filter(d => d.day === activeDow);
+    const totalPL = filtered.reduce((s, d) => s + d.pl, 0);
+    const totalWins = filtered.reduce((s, d) => s + d.wins, 0);
+    const totalLosses = filtered.reduce((s, d) => s + d.losses, 0);
+    const greenD = filtered.filter(d => d.pl > 0).length;
+    const avgVix = filtered.length > 0 ? (filtered.reduce((s, d) => s + (d.vix || 0), 0) / filtered.length).toFixed(1) : '\u2014';
+
+    const content = document.getElementById('pt-content');
+    content.innerHTML =
+      `<div class="tabs" id="dow-tabs">${tabs}</div>` +
+      makeKpis([
+        ['Total P/L', plStr(totalPL), clr(totalPL)],
+        ['Days', `${filtered.length}`, 'w'],
+        ['Green Days', `${greenD}/${filtered.length}`, greenD > filtered.length / 2 ? 'g' : 'r'],
+        ['Trade Win Rate', pct(totalWins, totalWins + totalLosses), 'w'],
+        ['Avg Daily P/L', plStr(Math.round(totalPL / Math.max(filtered.length, 1))), clr(totalPL)],
+        ['Avg VIX', avgVix, 'muted'],
+      ]) +
+      sortBar() +
+      `<div class="card-grid">${sortDays(filtered).map(makeCard).join('')}</div>`;
+
+    document.querySelectorAll('#dow-tabs .tab').forEach(t => {
+      t.onclick = () => { activeDow = t.dataset.dow; renderDow(); };
+    });
+    bindSort(renderDow);
+  }
+
+  // --- VIX View ---
+  const vixBuckets = [
+    { label: 'Low (< 18)', min: 0, max: 18 },
+    { label: 'Medium (18\u201322)', min: 18, max: 22 },
+    { label: 'Elevated (22\u201326)', min: 22, max: 26 },
+    { label: 'High (26+)', min: 26, max: 99 },
+  ];
+  let activeVix = 0;
+  function renderVix() {
+    const tabs = vixBuckets.map((b, i) => {
+      const dd = allDays.filter(d => (d.vix || 0) >= b.min && (d.vix || 0) < b.max);
+      return `<div class="tab ${i === activeVix ? 'active' : ''}" data-idx="${i}">${b.label}<span class="badge">${dd.length}</span></div>`;
+    }).join('');
+
+    const b = vixBuckets[activeVix];
+    const filtered = allDays.filter(d => (d.vix || 0) >= b.min && (d.vix || 0) < b.max);
+    const totalPL = filtered.reduce((s, d) => s + d.pl, 0);
+    const totalWins = filtered.reduce((s, d) => s + d.wins, 0);
+    const totalLosses = filtered.reduce((s, d) => s + d.losses, 0);
+    const greenD = filtered.filter(d => d.pl > 0).length;
+
+    const allT = T.filter(t => (t.vix || 0) >= b.min && (t.vix || 0) < b.max);
+    const putT = allT.filter(t => t.type === 'Put');
+    const callT = allT.filter(t => t.type === 'Call');
+    const putWR = putT.length > 0 ? pct(putT.filter(t => t.wl === 'WIN').length, putT.filter(t => t.wl !== 'BE').length) : '\u2014';
+    const callWR = callT.length > 0 ? pct(callT.filter(t => t.wl === 'WIN').length, callT.filter(t => t.wl !== 'BE').length) : '\u2014';
+
+    const content = document.getElementById('pt-content');
+    content.innerHTML =
+      `<div class="tabs" id="vix-tabs">${tabs}</div>` +
+      makeKpis([
+        ['Total P/L', plStr(totalPL), clr(totalPL)],
+        ['Days', `${filtered.length}`, 'w'],
+        ['Green Days', `${greenD}/${filtered.length}`, greenD > filtered.length / 2 ? 'g' : 'r'],
+        ['Trade Win Rate', pct(totalWins, totalWins + totalLosses), 'w'],
+        ['Put WR', putWR, 'muted'],
+        ['Call WR', callWR, 'muted'],
+      ]) +
+      sortBar() +
+      `<div class="card-grid">${sortDays(filtered).map(makeCard).join('')}</div>`;
+
+    document.querySelectorAll('#vix-tabs .tab').forEach(t => {
+      t.onclick = () => { activeVix = +t.dataset.idx; renderVix(); };
+    });
+    bindSort(renderVix);
+  }
+
+  // --- Hour View ---
+  const hourKeys = Object.keys(byHour).map(Number).sort((a, b) => a - b);
+  let activeHour = hourKeys[0] || 9;
+  function renderHour() {
+    const tabs = hourKeys.map(h => {
+      const d = byHour[h];
+      return `<div class="tab ${h === activeHour ? 'active' : ''}" data-h="${h}">${h}:00<span class="badge">${d.n}</span></div>`;
+    }).join('');
+
+    const hd = byHour[activeHour];
+    if (!hd) {
+      document.getElementById('pt-content').innerHTML = `<div class="tabs" id="hour-tabs">${tabs}</div><div class="loading">No trades</div>`;
+      return;
+    }
+
+    const avgPL = (hd.pl / hd.n).toFixed(0);
+    const putTrades = hd.trades.filter(t => t.type === 'Put');
+    const callTrades = hd.trades.filter(t => t.type === 'Call');
+    const putPL = putTrades.reduce((s, t) => s + t.pl, 0);
+    const callPL = callTrades.reduce((s, t) => s + t.pl, 0);
+
+    // Group trades by date for card display
+    const dateGroups = {};
+    hd.trades.forEach(t => {
+      if (!dateGroups[t.date]) dateGroups[t.date] = {
+        date: t.date, day: t.day, trades: [], pl: 0, wins: 0, losses: 0, n: 0,
+        o: t.open, h: t.high, l: t.low, c: t.close, vix: t.vix, puts: 0, calls: 0
+      };
+      const g = dateGroups[t.date];
+      g.trades.push(t); g.pl += t.pl; g.n++;
+      if (t.wl === 'WIN') g.wins++;
+      if (t.wl === 'LOSS') g.losses++;
+      if (t.type === 'Put') g.puts++; else g.calls++;
+    });
+    const grouped = Object.values(dateGroups).sort((a, b) => a.date.localeCompare(b.date));
+
+    const content = document.getElementById('pt-content');
+    content.innerHTML =
+      `<div class="tabs" id="hour-tabs">${tabs}</div>` +
+      makeKpis([
+        ['Total P/L', plStr(hd.pl), clr(hd.pl)],
+        ['Trades', `${hd.n}`, 'w'],
+        ['Win Rate', pct(hd.wins, hd.wins + hd.losses), 'w'],
+        ['Avg P/L / Trade', plStr(+avgPL), clr(+avgPL)],
+        ['Put P/L', plStr(putPL), clr(putPL)],
+        ['Call P/L', plStr(callPL), clr(callPL)],
+      ]) +
+      `<div class="card-grid">${grouped.map(makeCard).join('')}</div>`;
+
+    document.querySelectorAll('#hour-tabs .tab').forEach(t => {
+      t.onclick = () => { activeHour = +t.dataset.h; renderHour(); };
+    });
+  }
+
+  // --- Tab switching ---
+  let currentPtView = 'dow';
+  const viewRenderers = { dow: renderDow, vix: renderVix, hour: renderHour };
+
+  function switchView(name) {
+    currentPtView = name;
+    document.querySelectorAll('#pt-tabs .tab').forEach(t => {
+      t.classList.toggle('active', t.dataset.view === name);
+    });
+    currentSort = 'date';
+    viewRenderers[name]();
+  }
+
+  document.querySelectorAll('#pt-tabs .tab').forEach(t => {
+    t.addEventListener('click', () => switchView(t.dataset.view));
+  });
+
+  renderDow();
+})();
+</script>

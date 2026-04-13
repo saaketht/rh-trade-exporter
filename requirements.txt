@@ -2,3 +2,5 @@ pandas
 pytest
 requests
 yfinance
+fastapi
+uvicorn[standard]
