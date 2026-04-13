@@ -377,6 +377,68 @@ class TestBuildTradeDf:
 # ──────────────────────────────────────────────
 # MAKE HEADERS
 # ──────────────────────────────────────────────
+class TestResolveExpiredOpens:
+    def _make_open(self, symbol="SNAP", side="buy", price=0.05, qty=1,
+                   exp="2026-03-14", option_url="https://api.robinhood.com/options/instruments/abc/"):
+        return {
+            "option_url": option_url,
+            "side": side,
+            "price_per_share": price,
+            "quantity": qty,
+            "unmatched_qty": qty,
+            "dt": datetime(2026, 3, 13, 14, 30, tzinfo=timezone.utc),
+            "expiration_date": exp,
+            "option_type": "call",
+            "strike_price": 12.0,
+            "chain_symbol": symbol,
+            "group_id": "G99",
+            "account_number": "12345",
+        }
+
+    def test_expired_open_becomes_trade_row(self):
+        opens = [self._make_open()]
+        exp_urls = {"https://api.robinhood.com/options/instruments/abc/"}
+        rows, remaining = hood.resolve_expired_opens(opens, exp_urls)
+        assert len(rows) == 1
+        assert len(remaining) == 0
+        assert rows[0]["exit_credit"] == 0
+        assert rows[0]["pl"] == -5.0  # -(0.05 * 1 * 100)
+        assert rows[0]["pl_pct"] == -100.0
+        assert rows[0]["chain_symbol"] == "SNAP"
+
+    def test_non_expired_stays_unmatched(self):
+        opens = [self._make_open()]
+        exp_urls = set()  # no expirations
+        rows, remaining = hood.resolve_expired_opens(opens, exp_urls)
+        assert len(rows) == 0
+        assert len(remaining) == 1
+
+    def test_mixed_expired_and_unmatched(self):
+        expired = self._make_open(symbol="SNAP", option_url="https://api.robinhood.com/options/instruments/abc/")
+        still_open = self._make_open(symbol="WULF", option_url="https://api.robinhood.com/options/instruments/xyz/")
+        exp_urls = {"https://api.robinhood.com/options/instruments/abc/"}
+        rows, remaining = hood.resolve_expired_opens([expired, still_open], exp_urls)
+        assert len(rows) == 1
+        assert rows[0]["chain_symbol"] == "SNAP"
+        assert len(remaining) == 1
+        assert remaining[0]["chain_symbol"] == "WULF"
+
+    def test_sell_to_open_expired(self):
+        opens = [self._make_open(side="sell", price=0.10)]
+        exp_urls = {"https://api.robinhood.com/options/instruments/abc/"}
+        rows, remaining = hood.resolve_expired_opens(opens, exp_urls)
+        assert rows[0]["pl"] == 10.0  # sold for $10, expired worthless = profit
+
+    def test_exit_dt_is_4pm_et_on_expiry(self):
+        opens = [self._make_open(exp="2026-03-14")]
+        exp_urls = {"https://api.robinhood.com/options/instruments/abc/"}
+        rows, _ = hood.resolve_expired_opens(opens, exp_urls)
+        exit_dt = rows[0]["exit_dt"]
+        assert exit_dt.hour == 16
+        assert exit_dt.minute == 0
+        assert str(exit_dt.tzinfo) == "America/New_York"
+
+
 class TestMakeHeaders:
     def test_authorization_header(self):
         h = hood.make_headers("Bearer abc")
