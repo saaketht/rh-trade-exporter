@@ -713,11 +713,12 @@ def fetch_options_events(headers: dict, account_numbers: list[str]) -> list[dict
 
 def check_options_events(headers: dict, account_numbers: list[str],
                          unmatched_opens: list[dict], after_date: str = None):
-    """Check for exercise/assignment/expiration events and warn about unmatched positions."""
+    """Check for exercise/assignment/expiration events and warn about unmatched positions.
+    Returns expiration option URLs so caller can resolve expired opens into trade rows."""
     events = fetch_options_events(headers, account_numbers)
     if not events:
         print("  No options events found.\n")
-        return
+        return set()
 
     # Filter by date if specified
     if after_date:
@@ -739,14 +740,84 @@ def check_options_events(headers: dict, account_numbers: list[str],
         for e in assignments:
             print(f"    {e['event_date']} qty={e['quantity']} cash=${e.get('total_cash_amount', '?')} acct={e['account_number']}")
 
+    exp_urls = set(e.get("option", "") for e in expirations)
+
     # Cross-reference: do any unmatched opens match an expiration event?
     if unmatched_opens and expirations:
-        exp_urls = set(e.get("option", "") for e in expirations)
         matched = [o for o in unmatched_opens if o.get("option_url", "") in exp_urls]
         if matched:
-            print(f"  ℹ {len(matched)} unmatched open(s) were expired OTM (not missing closes)")
+            print(f"  ℹ {len(matched)} unmatched open(s) expired OTM → will be added as $0 exits")
 
     print()
+    return exp_urls
+
+
+def resolve_expired_opens(unmatched_opens: list[dict], exp_urls: set) -> tuple[list[dict], list[dict]]:
+    """Convert unmatched opens that expired OTM into paired trade rows with $0 exit.
+    Returns (expired_rows, remaining_unmatched)."""
+    expired_rows = []
+    remaining = []
+    ET = ZoneInfo("America/New_York")
+
+    for rec in unmatched_opens:
+        if rec.get("option_url", "") not in exp_urls:
+            remaining.append(rec)
+            continue
+
+        qty = rec.get("unmatched_qty", rec.get("quantity", 0))
+        entry_price = rec.get("price_per_share", 0)
+        entry_cost = round(entry_price * qty * 100, 2)
+        entry_dt = rec.get("dt")
+        trade_date = entry_dt.date() if entry_dt else None
+
+        # Exit at market close (4 PM ET) on expiry date
+        exp_str = rec.get("expiration_date", "")
+        exit_dt = None
+        if exp_str:
+            try:
+                exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+                exit_dt = datetime(exp_date.year, exp_date.month, exp_date.day,
+                                   16, 0, 0, tzinfo=ET)
+            except ValueError:
+                pass
+
+        if rec["side"] == "buy":
+            pl = round(0 - entry_cost, 2)
+        else:
+            pl = round(entry_cost - 0, 2)
+        pl_pct = -100.0 if entry_cost else 0
+
+        hold_min = round((exit_dt - entry_dt).total_seconds() / 60) if entry_dt and exit_dt else 0
+
+        dte = 0
+        if exp_str and trade_date:
+            try:
+                dte = (datetime.strptime(exp_str, "%Y-%m-%d").date() - trade_date).days
+            except ValueError:
+                pass
+
+        expired_rows.append({
+            "entry_dt": entry_dt,
+            "exit_dt": exit_dt,
+            "trade_date": trade_date,
+            "expiry_date": exp_str,
+            "option_type": rec.get("option_type", ""),
+            "quantity": qty,
+            "entry_cost": entry_cost,
+            "exit_credit": 0,
+            "pl": pl,
+            "pl_pct": pl_pct,
+            "hold_min": hold_min,
+            "strike_price": rec.get("strike_price"),
+            "chain_symbol": rec.get("chain_symbol", ""),
+            "group_id": rec.get("group_id", ""),
+            "dte": dte,
+            "account_number": rec.get("account_number", ""),
+        })
+
+    if expired_rows:
+        print(f"  → {len(expired_rows)} expired OTM position(s) resolved as $0 exits")
+    return expired_rows, remaining
 
 
 def fetch_rh_historicals(symbol: str, start: str, end: str, headers: dict) -> dict:
@@ -1166,7 +1237,22 @@ def main():
 
     # ── 5b. Check options events (exercise/assignment/expiration) ──
     print("🔔 Checking options events...\n")
-    check_options_events(headers, account_numbers, unmatched_opens, after_date=args.after_date)
+    exp_urls = check_options_events(headers, account_numbers, unmatched_opens, after_date=args.after_date)
+
+    # ── 5c. Resolve expired OTM opens as $0 exits ──
+    if unmatched_opens and exp_urls:
+        expired_rows, unmatched_opens = resolve_expired_opens(unmatched_opens, exp_urls)
+        if expired_rows:
+            paired_rows.extend(expired_rows)
+            # Re-sort by entry time
+            paired_rows.sort(key=lambda r: (
+                r["entry_dt"] or datetime.min.replace(tzinfo=timezone.utc),
+                r["exit_dt"] or datetime.min.replace(tzinfo=timezone.utc),
+            ))
+            # Fetch market data for newly added expired rows
+            expired_market = fetch_market_data(expired_rows, headers)
+            market.update(expired_market)
+            print()
 
     # ── 6. Build and save CSVs ──
     print("📝 Writing CSVs...\n")
