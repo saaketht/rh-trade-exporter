@@ -16,7 +16,16 @@
 </div>
 
 <div class="grid">
-  <div class="card full"><h2>Equity Curve (Cumulative P/L)</h2><canvas id="equity"></canvas></div>
+  <div class="card full">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <h2 style="margin-bottom:0">Equity Curve</h2>
+      <div class="tabs" style="margin-bottom:0" id="equity-tabs">
+        <div class="tab active" data-mode="cumulative">Cumulative</div>
+        <div class="tab" data-mode="daily">Daily P/L</div>
+      </div>
+    </div>
+    <canvas id="equity"></canvas>
+  </div>
   <div class="card"><h2>Monthly P/L</h2><canvas id="monthly"></canvas></div>
   <div class="card"><h2>P/L by Day of Week</h2><canvas id="dayPL"></canvas></div>
   <div class="card"><h2>P/L by Entry Hour</h2><canvas id="hourPL"></canvas></div>
@@ -33,6 +42,8 @@
   Chart.defaults.color = '#999';
   Chart.defaults.borderColor = '#2a2d3a';
   Chart.defaults.font.family = "'Inter',sans-serif";
+  Chart.defaults.interaction.mode = 'index';
+  Chart.defaults.interaction.intersect = false;
 
   const g = '#4ade80', r = '#f87171', b = '#60a5fa', p = '#c084fc', y = '#fbbf24';
   const charts = [];
@@ -78,9 +89,13 @@
     const bestDay = Math.max(...dailyPLs);
     const worstDay = Math.min(...dailyPLs);
 
-    // Max consecutive losses
-    let maxLoss = 0, curLoss = 0;
-    T.forEach(t => { if (t.wl === 'LOSS') { curLoss++; maxLoss = Math.max(maxLoss, curLoss); } else curLoss = 0; });
+    // Max consecutive losses & wins
+    let maxLoss = 0, curLoss = 0, maxWin = 0, curWin = 0;
+    T.forEach(t => {
+      if (t.wl === 'LOSS') { curLoss++; maxLoss = Math.max(maxLoss, curLoss); curWin = 0; }
+      else if (t.wl === 'WIN') { curWin++; maxWin = Math.max(maxWin, curWin); curLoss = 0; }
+      else { curLoss = 0; curWin = 0; }
+    });
 
     const dates = [...new Set(T.map(t => t.date))].sort();
     const firstDate = dates[0] || '';
@@ -99,6 +114,7 @@
       ['Profit Factor', pf, parseFloat(pf) >= 1 ? 'pos' : 'neg'],
       ['Best Day', plStr(bestDay), 'pos'],
       ['Worst Day', plStr(worstDay), 'neg'],
+      ['Max Consec. Wins', maxWin, 'pos'],
       ['Max Consec. Losses', maxLoss, 'neg'],
     ].map(([l, v, c]) => `<div class="kpi"><div class="kpi-label">${l}</div><div class="kpi-value ${c}">${v}</div></div>`).join('');
 
@@ -123,22 +139,65 @@
       insightEl.style.display = 'none';
     }
 
-    // 1. Equity Curve
-    charts.push(new Chart(document.getElementById('equity'), {
-      type: 'line',
-      data: {
-        labels: T.map((_, i) => '#' + (i + 1)),
-        datasets: [{
-          data: T.map(t => t.cum),
-          borderWidth: 2, tension: .3, pointRadius: 1.5,
-          pointBackgroundColor: T.map(t => t.cum >= 0 ? g : r),
-          segment: { borderColor: ctx => ctx.p1.parsed.y >= 0 ? g : r },
-          fill: { target: 'origin', above: 'rgba(74,222,128,.08)', below: 'rgba(248,113,113,.08)' }
-        }]
-      },
-      options: { responsive: true, plugins: { legend: { display: false } },
-        scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } }, x: { ticks: { maxTicksLimit: 20 }, grid: { display: false } } } }
-    }));
+    // 1. Equity Curve (with toggle)
+    // Precompute daily P/L series
+    const dailyByDate = {};
+    T.forEach(t => { dailyByDate[t.date] = (dailyByDate[t.date] || 0) + t.pl; });
+    const dailyDates = Object.keys(dailyByDate).sort();
+    const dailyPLSeries = dailyDates.map(d => Math.round(dailyByDate[d]));
+    let dailyCum = 0;
+    const dailyCumSeries = dailyPLSeries.map(v => { dailyCum += v; return dailyCum; });
+
+    let equityChart = null;
+    let equityMode = 'cumulative';
+
+    function renderEquity() {
+      if (equityChart) { equityChart.destroy(); charts.splice(charts.indexOf(equityChart), 1); }
+      let cfg;
+      if (equityMode === 'cumulative') {
+        cfg = {
+          type: 'line',
+          data: {
+            labels: T.map((_, i) => '#' + (i + 1)),
+            datasets: [{
+              data: T.map(t => t.cum),
+              borderWidth: 2, tension: .3, pointRadius: 1.5,
+              pointBackgroundColor: T.map(t => t.cum >= 0 ? g : r),
+              segment: { borderColor: ctx => ctx.p1.parsed.y >= 0 ? g : r },
+              fill: { target: 'origin', above: 'rgba(74,222,128,.08)', below: 'rgba(248,113,113,.08)' }
+            }]
+          },
+          options: { responsive: true, plugins: { legend: { display: false } },
+            scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } }, x: { ticks: { maxTicksLimit: 20 }, grid: { display: false } } } }
+        };
+      } else {
+        cfg = {
+          type: 'bar',
+          data: {
+            labels: dailyDates,
+            datasets: [
+              { label: 'Daily P/L', data: dailyPLSeries, backgroundColor: dailyPLSeries.map(v => v >= 0 ? g : r), borderRadius: 3, order: 2 },
+              { label: 'Cumulative', data: dailyCumSeries, type: 'line', borderColor: '#818cf8', backgroundColor: 'transparent', pointBackgroundColor: '#818cf8', tension: .3, borderWidth: 2, pointRadius: 1.5, order: 1 }
+            ]
+          },
+          options: { responsive: true, plugins: { legend: { position: 'bottom' } },
+            scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } }, x: { ticks: { maxTicksLimit: 20, maxRotation: 45 }, grid: { display: false } } } }
+        };
+      }
+      equityChart = new Chart(document.getElementById('equity'), cfg);
+      charts.push(equityChart);
+    }
+    renderEquity();
+
+    // Bind equity toggle tabs
+    document.querySelectorAll('#equity-tabs .tab').forEach(t => {
+      t.addEventListener('click', () => {
+        document.querySelectorAll('#equity-tabs .tab').forEach(x => x.classList.remove('active'));
+        t.classList.add('active');
+        equityMode = t.dataset.mode;
+        renderEquity();
+      });
+    });
 
     // 2. Monthly P/L
     const monthlyData = {};

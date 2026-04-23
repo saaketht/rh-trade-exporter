@@ -60,7 +60,7 @@
     barRow('Remove top 5 days', withoutTop5) +
     `<p style="font-size:12px;color:#777;margin-top:14px">Without your best day (${plStr(sorted[0].pl)} on ${sorted[0].date}), you'd be at ${plStr(withoutBest)}.</p>`;
 
-  // --- Calendar ---
+  // --- Calendar (single browsable month) ---
   const lookup = {};
   days.forEach(d => lookup[d.date] = d);
 
@@ -77,23 +77,24 @@
     return '';
   }
 
-  // Determine months to show
+  // Collect months with trades
   const monthSet = new Set();
   days.forEach(d => {
     const [yr, mo] = d.date.split('-');
     monthSet.add(parseInt(yr) + '-' + parseInt(mo));
   });
-  const monthsToShow = [...monthSet].sort().map(s => {
+  const monthsWithTrades = [...monthSet].sort().map(s => {
     const [yr, mo] = s.split('-');
-    return [parseInt(yr), parseInt(mo) - 1]; // JS month is 0-indexed
+    return [parseInt(yr), parseInt(mo) - 1];
   });
   const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
-  const cal = document.getElementById('calendar');
-  monthsToShow.forEach(([yr, mo]) => {
-    const block = document.createElement('div');
-    block.className = 'month-block';
+  let currentMonthIdx = monthsWithTrades.length - 1; // Start at most recent
+
+  function renderMonth() {
+    const [yr, mo] = monthsWithTrades[currentMonthIdx];
+    const cal = document.getElementById('calendar');
 
     const mKey = `${yr}-${String(mo + 1).padStart(2, '0')}`;
     const mDays = days.filter(d => d.date.startsWith(mKey));
@@ -102,40 +103,43 @@
     const greenD = mDays.filter(d => d.pl > 0).length;
     const redD = mDays.filter(d => d.pl < 0).length;
 
-    block.innerHTML = `
-      <div class="month-title">${monthNames[mo]} ${yr}</div>
+    const hasPrev = currentMonthIdx > 0;
+    const hasNext = currentMonthIdx < monthsWithTrades.length - 1;
+
+    const monthOptions = monthsWithTrades.map(([y, m], i) =>
+      `<option value="${i}" ${i === currentMonthIdx ? 'selected' : ''}>${monthNames[m]} ${y}</option>`
+    ).join('');
+
+    let html = `<div class="month-block">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <button id="cal-prev" style="background:#262938;border:1px solid #3a3d4a;color:${hasPrev ? '#fff' : '#555'};border-radius:8px;padding:6px 14px;cursor:${hasPrev ? 'pointer' : 'default'};font-size:14px" ${hasPrev ? '' : 'disabled'}>\u25C0</button>
+        <select id="cal-month-select" style="background:#1a1d27;border:1px solid #3a3d4a;color:#fff;font-size:18px;font-weight:600;padding:6px 12px;border-radius:8px;cursor:pointer;text-align:center;appearance:auto;font-family:inherit">${monthOptions}</select>
+        <button id="cal-next" style="background:#262938;border:1px solid #3a3d4a;color:${hasNext ? '#fff' : '#555'};border-radius:8px;padding:6px 14px;cursor:${hasNext ? 'pointer' : 'default'};font-size:14px" ${hasNext ? '' : 'disabled'}>\u25B6</button>
+      </div>
       <div class="month-summary">
         <span class="${mPL >= 0 ? 'g' : 'r'}">${plStr(mPL)}</span> &middot;
         ${mTrades} trades &middot; ${greenD} green days / ${redD} red days
       </div>
       <div class="week-header">${dayNames.map(d => `<span>${d}</span>`).join('')}</div>
-    `;
-
-    const grid = document.createElement('div');
-    grid.className = 'day-grid';
+      <div class="day-grid">`;
 
     const firstDay = new Date(yr, mo, 1).getDay();
     const daysInMonth = new Date(yr, mo + 1, 0).getDate();
 
     for (let i = 0; i < firstDay; i++) {
-      const empty = document.createElement('div');
-      empty.className = 'day-cell empty';
-      grid.appendChild(empty);
+      html += '<div class="day-cell empty"></div>';
     }
 
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = `${yr}-${String(mo + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      const cell = document.createElement('div');
       const data = lookup[dateStr];
       const dow = new Date(yr, mo, d).getDay();
 
       if (!data || dow === 0 || dow === 6) {
-        cell.className = 'day-cell no-trade';
-        cell.innerHTML = `<div class="date">${d}</div>`;
+        html += `<div class="day-cell no-trade"><div class="date">${d}</div></div>`;
       } else {
-        cell.className = `day-cell ${getClass(data.pl)}`;
         const plColor = data.pl >= 0 ? 'g' : 'r';
-        cell.innerHTML = `
+        html += `<div class="day-cell ${getClass(data.pl)}">
           <div class="date">${d}</div>
           <div class="pl ${plColor}">${data.pl >= 0 ? '+' : ''}${data.pl}</div>
           <div class="trades">${data.num_trades}t ${data.wins}w</div>
@@ -144,16 +148,29 @@
             P/L: <span class="${plColor}">${plStr(data.pl)}</span><br>
             Trades: ${data.num_trades} &middot; Wins: ${data.wins}/${data.num_trades}<br>
             Cumulative: ${plStr(data.cumulative_pl)}<br>
-            VIX: ${data.vix || '—'}
+            VIX: ${data.vix || '\u2014'}
           </div>
-        `;
+        </div>`;
       }
-      grid.appendChild(cell);
     }
 
-    block.appendChild(grid);
-    cal.appendChild(block);
-  });
+    html += '</div></div>';
+    cal.innerHTML = html;
+
+    // Bind nav
+    document.getElementById('cal-prev').addEventListener('click', () => {
+      if (currentMonthIdx > 0) { currentMonthIdx--; renderMonth(); }
+    });
+    document.getElementById('cal-next').addEventListener('click', () => {
+      if (currentMonthIdx < monthsWithTrades.length - 1) { currentMonthIdx++; renderMonth(); }
+    });
+    document.getElementById('cal-month-select').addEventListener('change', (e) => {
+      currentMonthIdx = parseInt(e.target.value);
+      renderMonth();
+    });
+  }
+
+  renderMonth();
 
   // --- Habit Insights (computed from trade-level data) ---
   const T = allTrades.map(t => ({
