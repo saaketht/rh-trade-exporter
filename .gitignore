@@ -1,15 +1,16 @@
 .venv/
-__pycache__/
-.pytest_cache/
 .vscode/
+.pytest_cache/
 
-outputs/
 plans/
+archive/
+outputs/
+__pycache__/
 
 .DS_Store
 .rh_token
 .server_token
 .rh_accounts.json
 .rh_instrument_cache.json
-rh_raw_orders.json
+
 *.xlsx
