@@ -32,7 +32,7 @@ import argparse
 import requests
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from collections import defaultdict, Counter
 from pathlib import Path
@@ -474,7 +474,22 @@ def pair_into_trade_rows(executions: list[dict]) -> tuple[list[dict], list[dict]
                 continue
 
             group_counter += 1
-            group_id = f"G{group_counter}"
+            # Stable natural key: YYYY-MM-DD-HHMMSS-{strike}{C|P}
+            # Derived from trade data so re-runs produce identical IDs.
+            _edt = entry.get("dt")
+            _strike = entry.get("strike_price")
+            _otype = (entry.get("option_type") or "").lower()
+            _tchar = "C" if _otype.startswith("c") else "P" if _otype.startswith("p") else "?"
+            if _edt and _strike is not None:
+                _et = _edt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/New_York")) \
+                      if _edt.tzinfo is None else _edt.astimezone(ZoneInfo("America/New_York"))
+                try:
+                    _strike_str = f"{float(_strike):g}"
+                except (TypeError, ValueError):
+                    _strike_str = str(_strike)
+                group_id = f"{_et.strftime('%Y-%m-%d-%H%M%S')}-{_strike_str}{_tchar}"
+            else:
+                group_id = f"G{group_counter}"  # fallback if data missing
             entry_price = entry["price_per_share"]
             matched_any = False
 
@@ -575,6 +590,7 @@ def fetch_rh_intraday(symbol: str, headers: dict) -> list[dict]:
     return [
         {
             "begins_at": b["begins_at"],
+            "open": float(b["open_price"]),
             "close": float(b["close_price"]),
             "high": float(b["high_price"]),
             "low": float(b["low_price"]),
@@ -582,6 +598,21 @@ def fetch_rh_intraday(symbol: str, headers: dict) -> list[dict]:
         }
         for b in bars if int(b.get("volume", 0)) > 0
     ]
+
+
+def classify_vs_underlying(indicator_price, underlying_price, tol: float = 0.05) -> str:
+    """Return 'Above' / 'Below' / 'At' / 'N/A' for an indicator vs underlying price.
+
+    'At' uses a small tolerance (default $0.05) to absorb rounding — traders don't
+    distinguish 654.31 vs 654.30 as meaningful. Journal column O formula treats
+    'At' as matching either direction.
+    """
+    if indicator_price is None or underlying_price is None:
+        return "N/A"
+    diff = underlying_price - indicator_price
+    if abs(diff) <= tol:
+        return "At"
+    return "Above" if diff > 0 else "Below"
 
 
 def compute_vwap(bars: list[dict], up_to: datetime) -> float | None:
@@ -904,40 +935,145 @@ def fetch_market_data(rows: list[dict], headers: dict) -> dict:
     return lookup
 
 
+def underlying_price_at(bars: list[dict], at: datetime) -> float | None:
+    """Return the close of the last bar starting at or before `at` on the same day.
+    None if no bar covers that day or none precedes `at`."""
+    if not bars:
+        return None
+    target_date = at.strftime("%Y-%m-%d")
+    last = None
+    for b in bars:
+        if b["begins_at"][:10] != target_date:
+            continue
+        bar_dt = datetime.fromisoformat(b["begins_at"].replace("Z", "+00:00"))
+        if bar_dt > at:
+            break
+        last = b
+    return float(last["close"]) if last else None
+
+
+def fetch_yf_intraday(symbol: str, start_date: str, end_date: str) -> list[dict]:
+    """Fallback 5-min bars from yfinance (up to ~60 days back).
+    Returns list of bar dicts shaped like fetch_rh_intraday output (UTC-aware ISO timestamps).
+    """
+    try:
+        # yfinance 5m data only goes ~60 days back; period="60d" is the documented cap.
+        df = yf.download(symbol, start=start_date, end=end_date,
+                         interval="5m", progress=False, auto_adjust=False)
+        if df.empty:
+            return []
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        bars = []
+        for idx, row in df.iterrows():
+            # yfinance returns tz-aware timestamps; normalize to UTC-Z format for consistency.
+            ts = idx.tz_convert("UTC") if idx.tzinfo else idx.tz_localize("UTC")
+            bars.append({
+                "begins_at": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "open": float(row["Open"]),
+                "close": float(row["Close"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "volume": int(row["Volume"]) if not pd.isna(row["Volume"]) else 0,
+            })
+        return bars
+    except Exception as e:
+        print(f"  ⚠ {symbol} yfinance intraday failed: {e}")
+        return []
+
+
+def synthesize_daily_from_intraday(bars: list[dict]) -> dict[str, dict]:
+    """Aggregate 5-min bars into daily OHLC. Returns {YYYY-MM-DD: {Asset Open,...}}.
+    Used as a fallback when the daily-bar endpoint hasn't reconciled today's session yet.
+    """
+    by_day: dict[str, list[dict]] = {}
+    for b in bars:
+        day = b["begins_at"][:10]
+        by_day.setdefault(day, []).append(b)
+
+    result = {}
+    for day, day_bars in by_day.items():
+        day_bars.sort(key=lambda x: x["begins_at"])
+        first_open = day_bars[0].get("open", day_bars[0]["close"])
+        highs = [b["high"] for b in day_bars]
+        lows = [b["low"] for b in day_bars]
+        result[day] = {
+            "Asset Open": round(first_open, 2),
+            "Asset High": round(max(highs), 2),
+            "Asset Low": round(min(lows), 2),
+            "Asset Close": round(day_bars[-1]["close"], 2),
+        }
+    return result
+
+
 def enrich_intraday(rows: list[dict], headers: dict):
-    """Add VWAP and 8 EMA to trade rows using RH 5-min intraday bars.
-    Only works for trades within the last ~5 trading days (span=week limit).
-    Modifies rows in-place."""
+    """Add VWAP and 8 EMA trend-alignment (Above/Below/At/N/A) to trade rows.
+
+    Uses RH 5-min bars for recent trades (~5 trading days) and yfinance 5-min as a
+    60-day fallback. Categorical output (not raw prices) because the journal's
+    'Trend Aligned?' formula expects Above/Below/At.
+
+    Modifies rows in-place.
+    """
     symbols = set(r.get("chain_symbol", "").upper() for r in rows if r.get("chain_symbol"))
-    intraday_cache = {}
+    intraday_cache: dict[str, list[dict]] = {}
+
+    # Trade date range — needed for yfinance fallback window.
+    trade_dates = sorted({r["trade_date"] for r in rows
+                          if r.get("trade_date") and isinstance(r["trade_date"], date)})
 
     for sym in sorted(symbols):
+        merged: list[dict] = []
         try:
-            bars = fetch_rh_intraday(sym, headers)
-            if bars:
-                intraday_cache[sym] = bars
-                dates = sorted(set(b["begins_at"][:10] for b in bars))
-                print(f"  {sym}: {len(bars)} intraday bars ({dates[0]} → {dates[-1]})")
-            else:
-                print(f"  {sym}: no intraday data available")
+            rh_bars = fetch_rh_intraday(sym, headers)
         except Exception as e:
-            print(f"  ⚠ {sym} intraday failed: {e}")
+            rh_bars = []
+            print(f"  ⚠ {sym} RH intraday failed: {e}")
+
+        rh_dates = {b["begins_at"][:10] for b in rh_bars}
+        if rh_bars:
+            merged.extend(rh_bars)
+            d_sorted = sorted(rh_dates)
+            print(f"  {sym}: {len(rh_bars)} RH 5-min bars ({d_sorted[0]} → {d_sorted[-1]})")
+
+        # Gap fill: any trade date not covered by RH → try yfinance (only for dates ≤60d old).
+        today = date.today()
+        missing = [d for d in trade_dates if d.isoformat() not in rh_dates
+                   and (today - d).days <= 60]
+        if missing:
+            yf_start = missing[0].isoformat()
+            yf_end = (missing[-1] + timedelta(days=1)).isoformat()
+            yf_bars = fetch_yf_intraday(sym, yf_start, yf_end)
+            if yf_bars:
+                merged.extend(yf_bars)
+                print(f"  {sym}: +{len(yf_bars)} yfinance 5-min bars (fallback for {len(missing)} dates)")
+
+        if merged:
+            # Sort by timestamp for VWAP accumulation.
+            merged.sort(key=lambda b: b["begins_at"])
+            intraday_cache[sym] = merged
+        else:
+            print(f"  {sym}: no intraday data available")
 
     filled_count = 0
     for r in rows:
         sym = r.get("chain_symbol", "").upper()
         entry_dt = r.get("entry_dt")
         if not entry_dt or sym not in intraday_cache:
-            r["vwap"] = None
-            r["ema8"] = None
+            r["vwap"] = "N/A"
+            r["ema8"] = "N/A"
             continue
         bars = intraday_cache[sym]
-        r["vwap"] = compute_vwap(bars, entry_dt)
-        r["ema8"] = compute_ema(bars, entry_dt, period=8)
-        if r["vwap"] is not None:
+        vwap_price = compute_vwap(bars, entry_dt)
+        ema_price = compute_ema(bars, entry_dt, period=8)
+        spot = underlying_price_at(bars, entry_dt)
+        r["vwap"] = classify_vs_underlying(vwap_price, spot)
+        r["ema8"] = classify_vs_underlying(ema_price, spot)
+        if r["vwap"] != "N/A" or r["ema8"] != "N/A":
             filled_count += 1
 
-    print(f"  → VWAP/EMA filled for {filled_count}/{len(rows)} trades\n")
+    print(f"  → VWAP/EMA trend filled for {filled_count}/{len(rows)} trades\n")
+    return intraday_cache
 
 
 # ──────────────────────────────────────────────
@@ -1106,6 +1242,116 @@ def build_unmatched_opens_df(records: list[dict]) -> pd.DataFrame:
 # ──────────────────────────────────────────────
 # SUMMARY
 # ──────────────────────────────────────────────
+def determine_incremental_cursor(out_dir: Path) -> str | None:
+    """Return an incremental `--after-date` derived from existing CSVs.
+
+    cursor = min( max(Date) across trade CSVs,  min(Date) in unmatched_opens )  - 1 day
+
+    The unmatched_opens floor ensures multi-DTE closes can still be paired: if an
+    open from N days ago is still awaiting a close, we must refetch from its date.
+    Returns None if no existing CSVs — caller should treat as "fetch everything".
+    """
+    max_closed: date | None = None
+    oldest_open: date | None = None
+
+    for name in ("spy_trades.csv", "other_trades.csv"):
+        p = out_dir / name
+        if not p.exists():
+            continue
+        try:
+            df = pd.read_csv(p, usecols=["Date"])
+        except Exception:
+            continue
+        dates = pd.to_datetime(df["Date"], errors="coerce").dropna()
+        if len(dates):
+            d = dates.max().date()
+            max_closed = d if max_closed is None else max(max_closed, d)
+
+    p = out_dir / "unmatched_opens.csv"
+    if p.exists():
+        try:
+            df = pd.read_csv(p, usecols=["Date"])
+            dates = pd.to_datetime(df["Date"], errors="coerce").dropna()
+            if len(dates):
+                oldest_open = dates.min().date()
+        except Exception:
+            pass
+
+    candidates = [d for d in (max_closed, oldest_open) if d is not None]
+    if not candidates:
+        return None
+    cursor = min(candidates) - timedelta(days=1)
+    return cursor.isoformat()
+
+
+def _trade_row_key(row: dict | pd.Series) -> tuple:
+    """Dedup key for a trade CSV row: (Group ID, Exit Time).
+    One Group ID can have multiple exit rows (partial fills), so Exit Time disambiguates.
+    """
+    return (str(row.get("Group ID", "")), str(row.get("Exit Time", "")))
+
+
+# Point-in-time columns: only populated while the contract/bar window is live.
+# On re-runs (especially --full after expiry) the API returns null — so don't
+# let blank new values overwrite previously-captured ones.
+_STICKY_COLS = ("Delta", "VWAP", "8 EMA")
+
+
+def _is_blank(v) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, float) and pd.isna(v):
+        return True
+    s = str(v).strip()
+    return s == "" or s.lower() in ("nan", "n/a")
+
+
+def merge_trade_csv(existing_path: Path, new_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge `new_df` into the CSV at `existing_path`, deduping by (Group ID, Exit Time).
+
+    New rows win on conflict (fresher market/greeks data) — EXCEPT for sticky
+    point-in-time columns (Delta, VWAP, 8 EMA) where a blank new value keeps the
+    previously-captured one. Sort by Date + Entry Time, renumber `Trade #`,
+    recompute `Cumulative P/L ($)`.
+    """
+    if not existing_path.exists():
+        merged = new_df.copy()
+    else:
+        old_df = pd.read_csv(existing_path)
+        if len(new_df):
+            # Build a lookup of old rows by dedup key for sticky-column fallback.
+            old_by_key = {_trade_row_key(r): r for _, r in old_df.iterrows()}
+            new_keys = set(old_by_key) & {_trade_row_key(r) for _, r in new_df.iterrows()}
+            # Carry forward sticky values from old into new where new is blank.
+            for idx in new_df.index:
+                key = _trade_row_key(new_df.loc[idx])
+                if key not in old_by_key:
+                    continue
+                old_row = old_by_key[key]
+                for col in _STICKY_COLS:
+                    if col in new_df.columns and col in old_df.columns:
+                        if _is_blank(new_df.at[idx, col]) and not _is_blank(old_row.get(col)):
+                            new_df.at[idx, col] = old_row[col]
+            # Drop old rows that collide with new ones.
+            mask = old_df.apply(lambda r: _trade_row_key(r) not in new_keys, axis=1)
+            old_df = old_df[mask]
+        merged = pd.concat([old_df, new_df], ignore_index=True)
+
+    if len(merged) == 0:
+        return merged
+
+    # Stable sort key: Date (as datetime), then Entry Time.
+    merged["_sort_date"] = pd.to_datetime(merged["Date"], errors="coerce")
+    merged = merged.sort_values(["_sort_date", "Entry Time"], kind="stable").reset_index(drop=True)
+    merged = merged.drop(columns=["_sort_date"])
+
+    merged["Trade #"] = range(1, len(merged) + 1)
+    # Recompute cumulative P/L from P/L ($).
+    if "P/L ($)" in merged.columns:
+        merged["Cumulative P/L ($)"] = merged["P/L ($)"].cumsum().astype(int)
+    return merged
+
+
 def print_trade_summary(df: pd.DataFrame, label: str):
     if len(df) == 0:
         return
@@ -1143,6 +1389,8 @@ def main():
                         help="Server-side filter: only this underlying symbol (e.g. SPY)")
     parser.add_argument("--filled-only", action="store_true", default=False,
                         help="Server-side filter: only fetch filled orders (auto-enabled unless --dump-raw)")
+    parser.add_argument("--full", action="store_true", default=False,
+                        help="Force full re-fetch (bypass incremental cursor from existing CSVs)")
     parser.add_argument("--output-dir", default="./outputs/",
                         help="Output directory (default: outputs directory)")
     parser.add_argument("--time-format", choices=["excel", "ampm"], default="excel",
@@ -1171,6 +1419,17 @@ def main():
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Incremental cursor ──
+    # Default: derive --after-date from existing CSVs so bare `python hood.py` only
+    # fetches what's new. --full or an explicit --after-date bypasses this.
+    if args.after_date is None and not args.full:
+        cursor = determine_incremental_cursor(out_dir)
+        if cursor:
+            args.after_date = cursor
+            print(f"🔄 Incremental mode: --after-date {cursor} (use --full to re-fetch everything)\n")
+    elif args.full:
+        print("🔁 Full mode: fetching all history\n")
 
     # ── 1. Discover accounts ──
     print("🔑 Discovering accounts...\n")
@@ -1230,7 +1489,21 @@ def main():
         market = fetch_market_data(paired_rows, headers)
 
         print("📊 Computing intraday VWAP + 8 EMA...\n")
-        enrich_intraday(paired_rows, headers)
+        intraday_cache = enrich_intraday(paired_rows, headers)
+
+        # Fallback: synthesize daily OHLC from intraday bars for any (sym, date)
+        # missing from market data (e.g. today's bar before RH's evening reconciliation).
+        needed_dates = {(r.get("chain_symbol", "").upper(), str(r["trade_date"]))
+                        for r in paired_rows if r.get("trade_date")}
+        synth_filled = 0
+        for sym, bars in intraday_cache.items():
+            synth = synthesize_daily_from_intraday(bars)
+            for day_key, ohlc in synth.items():
+                if (sym, day_key) in needed_dates and (sym, day_key) not in market:
+                    market[(sym, day_key)] = ohlc
+                    synth_filled += 1
+        if synth_filled:
+            print(f"  → Synthesized daily OHLC for {synth_filled} (symbol, date) pairs from intraday bars\n")
 
         print("📐 Fetching greeks (delta)...\n")
         enrich_greeks(executions, paired_rows, headers)
@@ -1267,24 +1540,33 @@ def main():
             df = build_trade_df(spy_rows, market, args.start, args.end, args.time_format)
             if len(df) > 0:
                 path = out_dir / "spy_trades.csv"
-                df.to_csv(path, index=False)
-                files_written.append(("spy_trades.csv", len(df)))
-                print_trade_summary(df, "SPY trades")
+                merged = merge_trade_csv(path, df)
+                merged.to_csv(path, index=False)
+                files_written.append(("spy_trades.csv", len(merged)))
+                print_trade_summary(merged, "SPY trades")
 
         if other_rows:
             df = build_trade_df(other_rows, market, args.start, args.end, args.time_format)
             if len(df) > 0:
                 path = out_dir / "other_trades.csv"
-                df.to_csv(path, index=False)
-                files_written.append(("other_trades.csv", len(df)))
-                print_trade_summary(df, "Other trades")
+                merged = merge_trade_csv(path, df)
+                merged.to_csv(path, index=False)
+                files_written.append(("other_trades.csv", len(merged)))
+                print_trade_summary(merged, "Other trades")
 
+    # Always reflect current state. The incremental cursor guarantees all
+    # previously-open positions are refetched, so an empty list here is
+    # authoritative — prune the stale file rather than leaving closed
+    # positions dangling in it.
+    path = out_dir / "unmatched_opens.csv"
     if unmatched_opens:
         df = build_unmatched_opens_df(unmatched_opens)
-        path = out_dir / "unmatched_opens.csv"
         df.to_csv(path, index=False)
         files_written.append(("unmatched_opens.csv", len(df)))
         print(f"     Unmatched opens: {len(df)} positions")
+    elif path.exists():
+        path.unlink()
+        print(f"     Unmatched opens: cleared (all previously-open positions now paired)")
 
     # Non-filled order CSVs
     for state in ("cancelled", "rejected", "failed"):
@@ -1303,6 +1585,44 @@ def main():
 
     if not files_written:
         print("   (no output files — check your date filters or account numbers)")
+
+    # ── Today's daily summary (for discord bot / eyeballing) ──
+    print_today_summary(out_dir)
+
+
+def print_today_summary(out_dir: Path):
+    """Print a one-block summary of today's closed trades across all symbols."""
+    today = date.today().isoformat()
+    rows = []
+    for name in ("spy_trades.csv", "other_trades.csv"):
+        p = out_dir / name
+        if not p.exists():
+            continue
+        try:
+            df = pd.read_csv(p)
+        except Exception:
+            continue
+        df["_d"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        today_df = df[df["_d"] == today]
+        if len(today_df):
+            rows.append(today_df)
+
+    if not rows:
+        print(f"\n📅 Today ({today}): no closed trades.")
+        return
+
+    combined = pd.concat(rows, ignore_index=True)
+    wins = (combined["Win/Loss"] == "WIN").sum()
+    losses = (combined["Win/Loss"] == "LOSS").sum()
+    be = (combined["Win/Loss"] == "BE").sum()
+    total_pl = int(combined["P/L ($)"].sum())
+    n = len(combined)
+    win_rate = (wins / n * 100) if n else 0
+    symbols = ", ".join(sorted(combined["Symbol"].dropna().unique()))
+
+    print(f"\n📅 Today ({today}) — {symbols}")
+    print(f"   Trades: {n}  |  {wins}W / {losses}L / {be}BE  ({win_rate:.0f}% win rate)")
+    print(f"   P/L: ${total_pl:,}")
 
 
 if __name__ == "__main__":
