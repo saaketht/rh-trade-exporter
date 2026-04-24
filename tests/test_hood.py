@@ -246,6 +246,91 @@ class TestComputeEma:
         assert hood.compute_ema([], datetime(2026, 3, 20, 14, 0, tzinfo=timezone.utc)) is None
 
 
+class TestClassifyVsUnderlying:
+    def test_above(self):
+        assert hood.classify_vs_underlying(580.0, 581.0) == "Above"
+
+    def test_below(self):
+        assert hood.classify_vs_underlying(581.0, 580.0) == "Below"
+
+    def test_at_within_tolerance(self):
+        assert hood.classify_vs_underlying(580.0, 580.04) == "At"
+        assert hood.classify_vs_underlying(580.10, 580.07) == "At"
+
+    def test_na_when_missing(self):
+        assert hood.classify_vs_underlying(None, 580.0) == "N/A"
+        assert hood.classify_vs_underlying(580.0, None) == "N/A"
+        assert hood.classify_vs_underlying(None, None) == "N/A"
+
+
+class TestUnderlyingPriceAt:
+    def test_returns_last_bar_close_before_time(self):
+        bars = _make_bars(5)  # bars at 13:30, 13:35, 13:40, 13:45, 13:50 UTC
+        # After 13:42 → last bar starting ≤ 13:42 is 13:40 (third bar, 580 + 2*0.5 = 581)
+        at = datetime(2026, 3, 20, 13, 42, tzinfo=timezone.utc)
+        assert hood.underlying_price_at(bars, at) == 581.0
+
+    def test_wrong_day_returns_none(self):
+        bars = _make_bars(3)
+        at = datetime(2026, 3, 21, 14, 0, tzinfo=timezone.utc)
+        assert hood.underlying_price_at(bars, at) is None
+
+    def test_empty_bars(self):
+        assert hood.underlying_price_at([], datetime(2026, 3, 20, 14, 0, tzinfo=timezone.utc)) is None
+
+
+class TestEnrichIntradaySmoke:
+    """Exercise enrich_intraday end-to-end with mocked fetchers — catches
+    NameErrors and shape mismatches that the pure-logic tests miss."""
+
+    def test_classifies_using_rh_bars(self, monkeypatch):
+        bars = _make_bars(10)  # 13:30-14:15 UTC on 2026-03-20, prices 580.0..584.5
+        monkeypatch.setattr(hood, "fetch_rh_intraday", lambda sym, h: bars)
+        monkeypatch.setattr(hood, "fetch_yf_intraday", lambda s, a, b: [])
+
+        row = {
+            "chain_symbol": "SPY",
+            "trade_date": datetime(2026, 3, 20).date(),
+            "entry_dt": datetime(2026, 3, 20, 14, 10, tzinfo=timezone.utc),
+        }
+        hood.enrich_intraday([row], headers={})
+
+        assert row["vwap"] in {"Above", "Below", "At", "N/A"}
+        assert row["ema8"] in {"Above", "Below", "At", "N/A"}
+
+    def test_no_data_sets_na(self, monkeypatch):
+        monkeypatch.setattr(hood, "fetch_rh_intraday", lambda sym, h: [])
+        monkeypatch.setattr(hood, "fetch_yf_intraday", lambda s, a, b: [])
+
+        row = {
+            "chain_symbol": "SPY",
+            "trade_date": datetime(2026, 3, 20).date(),
+            "entry_dt": datetime(2026, 3, 20, 14, 10, tzinfo=timezone.utc),
+        }
+        hood.enrich_intraday([row], headers={})
+        assert row["vwap"] == "N/A"
+        assert row["ema8"] == "N/A"
+
+    def test_empty_rows_doesnt_crash(self):
+        hood.enrich_intraday([], headers={})
+
+
+class TestIncrementalCursor:
+    def test_no_csvs_returns_none(self, tmp_path):
+        assert hood.determine_incremental_cursor(tmp_path) is None
+
+    def test_spy_only(self, tmp_path):
+        (tmp_path / "spy_trades.csv").write_text("Date\n3/10/2026\n3/15/2026\n")
+        # cursor = 3/15 - 1 day = 3/14
+        assert hood.determine_incremental_cursor(tmp_path) == "2026-03-14"
+
+    def test_unmatched_opens_pulls_cursor_earlier(self, tmp_path):
+        (tmp_path / "spy_trades.csv").write_text("Date\n3/10/2026\n3/15/2026\n")
+        (tmp_path / "unmatched_opens.csv").write_text("Date\n3/01/2026\n")
+        # min(3/15, 3/1) - 1 = 2/28
+        assert hood.determine_incremental_cursor(tmp_path) == "2026-02-28"
+
+
 # ──────────────────────────────────────────────
 # TIME / DATE FORMATTING
 # ──────────────────────────────────────────────
