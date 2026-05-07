@@ -1,0 +1,603 @@
+<style>
+.kpi.clickable { cursor: pointer; transition: background .15s, transform .1s; position: relative; }
+.kpi.clickable:hover { background: #20242f; }
+.kpi.clickable::after {
+  content: "ⓘ"; position: absolute; top: 8px; right: 10px;
+  font-size: 11px; color: #555;
+}
+.pf-modal-bg {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: none; align-items: center; justify-content: center;
+  z-index: 1000;
+}
+.pf-modal-bg.open { display: flex; }
+.pf-modal {
+  background: #1a1d27; border-radius: 12px; padding: 28px 32px;
+  max-width: 560px; width: 90%; max-height: 85vh; overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5); border: 1px solid #2a2d3a;
+}
+.pf-modal h2 { font-size: 18px; margin-bottom: 4px; color: #fff; }
+.pf-modal .pf-sub { font-size: 12px; color: #888; margin-bottom: 20px; }
+.pf-modal .pf-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 10px 0; border-bottom: 1px solid #2a2d3a; font-size: 13px;
+}
+.pf-modal .pf-row:last-child { border-bottom: none; }
+.pf-modal .pf-row .pf-lbl { color: #aaa; }
+.pf-modal .pf-row .pf-val { color: #fff; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pf-modal .pf-row.total { border-top: 2px solid #3a3d4a; margin-top: 6px; padding-top: 14px; }
+.pf-modal .pf-row.total .pf-lbl { color: #ccc; font-weight: 600; }
+.pf-modal .pf-formula {
+  background: #0f1117; border-radius: 8px; padding: 12px 14px;
+  font-family: ui-monospace, monospace; font-size: 12px; color: #aaa;
+  margin: 16px 0; line-height: 1.6; word-break: break-word;
+}
+.pf-modal .pf-close {
+  position: absolute; top: 14px; right: 18px; cursor: pointer;
+  font-size: 22px; color: #666; background: none; border: none;
+}
+.pf-modal .pf-close:hover { color: #ccc; }
+.pf-modal-wrap { position: relative; }
+.pf-data-note {
+  font-size: 11px; color: #666; text-align: center;
+  margin-top: 8px;
+}
+.pos { color: #4ade80; }
+.neg { color: #f87171; }
+
+.pf-span-row {
+  display: flex; gap: 6px; margin: 4px 0 18px;
+  flex-wrap: wrap; align-items: center;
+}
+.pf-span-row .pf-span-label {
+  font-size: 11px; color: #666; text-transform: uppercase;
+  letter-spacing: 0.8px; margin-right: 6px;
+}
+.pf-span {
+  padding: 6px 14px; border-radius: 8px; font-size: 12px;
+  cursor: pointer; background: transparent; color: #888;
+  border: 1px solid transparent; transition: all 0.12s;
+  font-weight: 600; letter-spacing: 0.4px;
+}
+.pf-span:hover { color: #ccc; background: #1a1d27; }
+.pf-span.active {
+  background: #262938; color: #fff; border-color: #3a3d4a;
+}
+.pf-span.disabled { opacity: 0.35; cursor: not-allowed; }
+</style>
+
+<h1>Portfolio</h1>
+<p class="subtitle" id="portfolio-sub">Loading...</p>
+
+<div class="kpi-row" id="portfolio-kpis"></div>
+
+<div class="pf-span-row" id="portfolio-span-row" style="display:none">
+  <span class="pf-span-label">Range</span>
+  <button class="pf-span" data-span="1D">1D</button>
+  <button class="pf-span" data-span="1W">1W</button>
+  <button class="pf-span" data-span="1M">1M</button>
+  <button class="pf-span" data-span="3M">3M</button>
+  <button class="pf-span" data-span="6M">6M</button>
+  <button class="pf-span" data-span="YTD">YTD</button>
+  <button class="pf-span" data-span="1Y">1Y</button>
+  <button class="pf-span" data-span="5Y">5Y</button>
+  <button class="pf-span" data-span="ALL">ALL</button>
+</div>
+
+<div class="grid" id="portfolio-charts"></div>
+<div class="pf-data-note" id="portfolio-data-note"></div>
+
+<div class="pf-modal-bg" id="pf-modal-bg">
+  <div class="pf-modal-wrap">
+    <div class="pf-modal" id="pf-modal"></div>
+  </div>
+</div>
+
+<script>
+(async function() {
+  Chart.defaults.color = '#999';
+  Chart.defaults.borderColor = '#2a2d3a';
+  Chart.defaults.font.family = "'Inter',sans-serif";
+  Chart.defaults.interaction.mode = 'index';
+  Chart.defaults.interaction.intersect = false;
+
+  const g = '#4ade80', r = '#f87171', b = '#60a5fa', y = '#fbbf24', gray = '#888';
+  const charts = [];
+
+  const fmt$ = (n) => (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US', {maximumFractionDigits: 0});
+  const fmt$2 = (n) => (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const fmtPct = (n) => (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
+  const signCls = (n) => n >= 0 ? 'pos' : 'neg';
+
+  let snapshots;
+  try {
+    snapshots = await apiFetch('/api/cash-flow');
+  } catch (e) {
+    document.getElementById('portfolio-sub').textContent = 'Failed to load: ' + e.message;
+    return;
+  }
+
+  if (!snapshots || !snapshots.length) {
+    document.getElementById('portfolio-sub').textContent = 'No cash flow snapshots yet — run cash_flow.py.';
+    return;
+  }
+
+  const byDay = new Map();
+  for (const s of snapshots) {
+    const d = (s.timestamp || '').slice(0, 10);
+    if (d) byDay.set(d, s);
+  }
+  const daily = [...byDay.values()];
+  const latest = snapshots[snapshots.length - 1];
+  const earliest = snapshots[0];
+
+  document.getElementById('portfolio-sub').textContent =
+    `${daily.length} daily snapshot${daily.length === 1 ? '' : 's'} · latest ${latest.timestamp.slice(0, 10)}`;
+
+  document.getElementById('portfolio-data-note').textContent =
+    `Snapshot history: ${earliest.timestamp.slice(0, 10)} → ${latest.timestamp.slice(0, 10)}. ` +
+    `Earlier dates aren't available — cash_flow.py only records snapshots on each run.`;
+
+  // ── Modal helpers ──
+  const modalBg = document.getElementById('pf-modal-bg');
+  const modal = document.getElementById('pf-modal');
+
+  function openModal(html) {
+    modal.innerHTML = `<button class="pf-close" aria-label="Close">×</button>${html}`;
+    modalBg.classList.add('open');
+    modal.querySelector('.pf-close').addEventListener('click', closeModal);
+  }
+  function closeModal() { modalBg.classList.remove('open'); }
+  modalBg.addEventListener('click', (e) => { if (e.target === modalBg) closeModal(); });
+  document.addEventListener('keydown', function escHandler(e) {
+    if (e.key === 'Escape') closeModal();
+  });
+
+  function row(label, value, opts = {}) {
+    const cls = opts.cls || '';
+    const valCls = opts.color ? ` style="color:${opts.color}"` : '';
+    return `<div class="pf-row ${opts.total ? 'total' : ''}">
+      <span class="pf-lbl">${label}</span>
+      <span class="pf-val ${cls}"${valCls}>${value}</span>
+    </div>`;
+  }
+
+  // ── Detail builders ──
+  function detailEquity() {
+    const accts = latest.accounts || [];
+    const total = latest.current_equity || 0;
+    const rows = accts.length
+      ? accts.map(a => {
+          const positions = (a.equity || 0) - (a.cash || 0);
+          return row(
+            `${a.type} <span style="color:#666;font-size:11px">(${a.account_number})</span>`,
+            fmt$2(a.equity)
+          ) + row(
+            `<span style="color:#777;font-size:12px;margin-left:14px">↳ cash</span>`,
+            fmt$2(a.cash)
+          ) + row(
+            `<span style="color:#777;font-size:12px;margin-left:14px">↳ positions</span>`,
+            fmt$2(positions)
+          );
+        }).join('')
+      : `<div class="pf-row"><span class="pf-lbl" style="color:#888">Per-account breakdown not in this snapshot. Re-run <code>cash_flow.py</code> to populate.</span></div>`;
+    openModal(`
+      <h2>Current Equity</h2>
+      <div class="pf-sub">Total portfolio value across all accounts</div>
+      ${rows}
+      ${accts.length ? row('Total equity', fmt$2(total), {total: true}) : ''}
+    `);
+  }
+
+  function detailAllTimePL() {
+    const equity = latest.current_equity || 0;
+    const basis = latest.net_cash_basis || 0;
+    const pnl = latest.all_time_pnl || 0;
+    const pct = latest.all_time_pnl_pct || 0;
+    openModal(`
+      <h2>All-time P/L</h2>
+      <div class="pf-sub">Equity above what was invested net of income</div>
+      <div class="pf-formula">all_time_pnl = current_equity − net_cash_basis</div>
+      ${row('Current equity', fmt$2(equity))}
+      ${row('Net cash basis', `−${fmt$2(basis)}`)}
+      ${row('= All-time P/L', `<span class="${signCls(pnl)}">${fmt$2(pnl)} (${fmtPct(pct)})</span>`, {total: true})}
+      <div class="pf-formula">net_cash_basis = net_deposited − gold_fees + dividends + referral_grants</div>
+      ${row('Net deposited', fmt$2(latest.net_deposited || 0))}
+      ${row('Gold fees', `−${fmt$2(latest.gold_fees || 0)}`)}
+      ${row('Dividends', `+${fmt$2(latest.dividends || 0)}`)}
+      ${row('Referral grants', `+${fmt$2(latest.referral_grants || 0)}`)}
+      ${row('= Net cash basis', fmt$2(basis), {total: true})}
+      <div class="pf-sub" style="margin-top:14px">Percentage is on completed deposits (${fmt$2(latest.deposits || 0)}).</div>
+    `);
+  }
+
+  function detailTotalReturn() {
+    const equity = latest.current_equity || 0;
+    const dep = latest.deposits || 0;
+    const wd = latest.withdrawals || 0;
+    const tr = latest.total_return || 0;
+    const trPct = latest.total_return_pct || 0;
+    openModal(`
+      <h2>Total Return</h2>
+      <div class="pf-sub">If you cashed out today, this is your lifetime gain/loss net of every dollar moved in or out</div>
+      <div class="pf-formula">total_return = current_equity + withdrawals − deposits</div>
+      ${row('Current equity', fmt$2(equity))}
+      ${row('Withdrawals (taken out)', `+${fmt$2(wd)}`)}
+      ${row('Deposits (put in)', `−${fmt$2(dep)}`)}
+      ${row('= Total return', `<span class="${signCls(tr)}">${fmt$2(tr)} (${fmtPct(trPct)})</span>`, {total: true})}
+      <div class="pf-sub" style="margin-top:14px">
+        Includes fees, dividends, and referrals implicitly (they're already reflected in current equity).
+        Differs from <em>All-time P/L</em>, which compares equity to a deposit-adjusted cost basis instead.
+      </div>
+    `);
+  }
+
+  function detailNetDeposited() {
+    const dep = latest.deposits || 0;
+    const wd = latest.withdrawals || 0;
+    const depP = latest.deposits_pending || 0;
+    const wdP = latest.withdrawals_pending || 0;
+    const net = latest.net_deposited || 0;
+    openModal(`
+      <h2>Net Deposited</h2>
+      <div class="pf-sub">All ACH transfers in/out, net of pending and failed</div>
+      <div class="pf-formula">net_deposited = deposits − withdrawals (completed only)</div>
+      ${row('Completed deposits', `+${fmt$2(dep)}`, {color: g})}
+      ${row('Completed withdrawals', `−${fmt$2(wd)}`, {color: r})}
+      ${row('= Net deposited', fmt$2(net), {total: true})}
+      ${(depP || wdP) ? `
+        <div class="pf-sub" style="margin-top:18px">Pending (not yet counted)</div>
+        ${row('Pending deposits', `+${fmt$2(depP)}`)}
+        ${row('Pending withdrawals', `−${fmt$2(wdP)}`)}
+        ${row('Net after pending', fmt$2(net + depP - wdP), {total: true})}
+      ` : '<div class="pf-sub" style="margin-top:14px">No pending transfers.</div>'}
+    `);
+  }
+
+  function detailLifetimeIncome() {
+    const div = latest.dividends || 0;
+    const ref = latest.referral_grants || 0;
+    const fees = latest.gold_fees || 0;
+    const months = latest.gold_months;
+    const total = div + ref - fees;
+    openModal(`
+      <h2>Lifetime Income</h2>
+      <div class="pf-sub">Money RH has paid you (or charged), separate from market gains</div>
+      <div class="pf-formula">lifetime_income = dividends + referral_grants − gold_fees</div>
+      ${row('Dividends', `+${fmt$2(div)}`, {color: g})}
+      ${row('Referral grants', `+${fmt$2(ref)}`, {color: g})}
+      ${row(`Gold subscription fees${months ? ` <span style="color:#666;font-size:11px">(${months} months)</span>` : ''}`, `−${fmt$2(fees)}`, {color: r})}
+      ${row('= Lifetime income', `<span class="${signCls(total)}">${fmt$2(total)}</span>`, {total: true})}
+    `);
+  }
+
+  // ── Render KPIs ──
+  const lifetimeIncome = (latest.dividends || 0) + (latest.referral_grants || 0) - (latest.gold_fees || 0);
+  const pnlColor = (latest.all_time_pnl || 0) >= 0 ? g : r;
+  const trColor = (latest.total_return || 0) >= 0 ? g : r;
+  const incomeColor = lifetimeIncome >= 0 ? g : r;
+
+  const kpiRow = document.getElementById('portfolio-kpis');
+  kpiRow.innerHTML = `
+    <div class="kpi clickable" data-kpi="equity">
+      <div class="kpi-label">Current Equity</div>
+      <div class="kpi-val">${fmt$2(latest.current_equity || 0)}</div>
+    </div>
+    <div class="kpi clickable" data-kpi="pnl">
+      <div class="kpi-label">All-time P/L</div>
+      <div class="kpi-val" style="color:${pnlColor}">${fmt$2(latest.all_time_pnl || 0)}</div>
+      <div class="kpi-label" style="margin-top:4px;color:${pnlColor}">${fmtPct(latest.all_time_pnl_pct || 0)}</div>
+    </div>
+    <div class="kpi clickable" data-kpi="tr">
+      <div class="kpi-label">Total Return</div>
+      <div class="kpi-val" style="color:${trColor}">${fmt$2(latest.total_return || 0)}</div>
+      <div class="kpi-label" style="margin-top:4px;color:${trColor}">${fmtPct(latest.total_return_pct || 0)}</div>
+    </div>
+    <div class="kpi clickable" data-kpi="netdep">
+      <div class="kpi-label">Net Deposited</div>
+      <div class="kpi-val">${fmt$2(latest.net_deposited || 0)}</div>
+      <div class="kpi-label" style="margin-top:4px">${fmt$(latest.deposits || 0)} in · ${fmt$(latest.withdrawals || 0)} out</div>
+    </div>
+    <div class="kpi clickable" data-kpi="income">
+      <div class="kpi-label">Lifetime Income</div>
+      <div class="kpi-val" style="color:${incomeColor}">${fmt$2(lifetimeIncome)}</div>
+      <div class="kpi-label" style="margin-top:4px">div ${fmt$(latest.dividends || 0)} · ref ${fmt$(latest.referral_grants || 0)} · fees -${fmt$(latest.gold_fees || 0)}</div>
+    </div>
+  `;
+
+  const handlers = { equity: detailEquity, pnl: detailAllTimePL, tr: detailTotalReturn, netdep: detailNetDeposited, income: detailLifetimeIncome };
+  kpiRow.querySelectorAll('.kpi.clickable').forEach(el => {
+    el.addEventListener('click', () => {
+      const fn = handlers[el.dataset.kpi];
+      if (fn) fn();
+    });
+  });
+
+  // ── Charts ──
+  const grid = document.getElementById('portfolio-charts');
+  if (daily.length < 2) {
+    grid.innerHTML = '<div class="card full"><p class="subtitle" style="margin:0">Need at least 2 daily snapshots to render charts. Re-run cash_flow.py tomorrow.</p></div>';
+    return;
+  }
+
+  // Static skeleton for charts (canvases recreated on span change to clean up Chart.js)
+  grid.innerHTML = `
+    <div class="card full"><h2>Equity vs Cost Basis</h2><canvas id="eq-basis"></canvas></div>
+    <div class="card full"><h2>All-time P/L</h2><canvas id="pnl-time"></canvas></div>
+    <div class="card full"><h2>Period Return</h2><canvas id="period-return"></canvas></div>
+    <div class="card"><h2>Cumulative Deposits & Withdrawals</h2><canvas id="dep-wd"></canvas></div>
+  `;
+
+  // ── Span filtering ──
+  const SPANS = {
+    '1D': 1, '1W': 7, '1M': 30, '3M': 91, '6M': 183,
+    'YTD': 'ytd', '1Y': 365, '5Y': 1825, 'ALL': null,
+  };
+  const SPAN_LABEL = {
+    '1D': 'Past day', '1W': 'Past week',
+    '1M': 'Past month', '3M': 'Past 3 months', '6M': 'Past 6 months',
+    'YTD': 'Year to date', '1Y': 'Past year', '5Y': 'Past 5 years', 'ALL': 'All time',
+  };
+
+  // Earliest data date — used to disable spans that would be empty
+  const earliestDateStr = earliest.timestamp.slice(0, 10);
+  const earliestDate = new Date(earliestDateStr + 'T00:00:00');
+  const daysOfData = Math.floor((Date.now() - earliestDate.getTime()) / 86400000);
+
+  function filterDaily(span) {
+    if (span === 'ALL' || span === null) return daily;
+    // Special case 1D: use raw (pre-dedup) snapshots so multi-snapshot days
+    // (manual + cron runs on the same day) show intra-day variation.
+    if (span === '1D') {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const todays = snapshots.filter(s => (s.timestamp || '').slice(0, 10) === todayStr);
+      if (todays.length >= 2) return todays;
+      // Fall back to last 2 daily points so the chart at least renders.
+      return daily.slice(-2);
+    }
+    let cutoffStr;
+    if (span === 'YTD' || SPANS[span] === 'ytd') {
+      cutoffStr = new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10);
+    } else {
+      cutoffStr = new Date(Date.now() - SPANS[span] * 86400000).toISOString().slice(0, 10);
+    }
+    const sliced = daily.filter(s => s.timestamp.slice(0, 10) >= cutoffStr);
+    // Always include at least 2 points so charts render — fall back to last 2
+    return sliced.length >= 2 ? sliced : daily.slice(-2);
+  }
+
+  const STORAGE_KEY = 'pf-active-span';
+  let activeSpan = localStorage.getItem(STORAGE_KEY) || '1Y';
+  if (!(activeSpan in SPANS)) activeSpan = '1Y';
+
+  // Show + wire up the span row
+  const spanRow = document.getElementById('portfolio-span-row');
+  spanRow.style.display = '';
+  spanRow.querySelectorAll('.pf-span').forEach(btn => {
+    const sp = btn.dataset.span;
+    // Disable spans that would have no data
+    const required = SPANS[sp];
+    if (typeof required === 'number' && required > daysOfData + 1 && sp !== 'ALL') {
+      btn.classList.add('disabled');
+    }
+    btn.addEventListener('click', () => {
+      if (btn.classList.contains('disabled')) return;
+      if (sp === activeSpan) return;
+      activeSpan = sp;
+      localStorage.setItem(STORAGE_KEY, sp);
+      updateActiveSpan();
+      renderCharts();
+    });
+  });
+  function updateActiveSpan() {
+    spanRow.querySelectorAll('.pf-span').forEach(b => {
+      b.classList.toggle('active', b.dataset.span === activeSpan);
+    });
+  }
+  updateActiveSpan();
+
+  // ── Tooltip + axis helpers ──
+  const dateFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const dollarTicks = {
+    ticks: { callback: (v) => fmt$(v) },
+    grid: { borderDash: [3, 4], color: '#222530' },
+  };
+  const xTimeScale = (sliced) => {
+    // Choose tick unit by span breadth
+    const days = sliced.length
+      ? (new Date(sliced[sliced.length - 1].timestamp) - new Date(sliced[0].timestamp)) / 86400000
+      : 0;
+    let unit, tooltipFormat;
+    if (days <= 1) { unit = 'hour'; tooltipFormat = 'MMM d, h:mm a'; }
+    else if (days <= 14) { unit = 'day'; tooltipFormat = 'MMM d, yyyy'; }
+    else if (days <= 60) { unit = 'week'; tooltipFormat = 'MMM d, yyyy'; }
+    else if (days <= 730) { unit = 'month'; tooltipFormat = 'MMM d, yyyy'; }
+    else { unit = 'year'; tooltipFormat = 'MMM d, yyyy'; }
+    return {
+      type: 'time',
+      time: { unit, tooltipFormat, displayFormats: {
+        hour: 'h:mm a', day: 'MMM d', week: 'MMM d',
+        month: 'MMM yyyy', year: 'yyyy',
+      } },
+      grid: { display: false },
+      ticks: { maxRotation: 0, autoSkip: true, autoSkipPadding: 16 },
+    };
+  };
+  // Title is auto-formatted by Chart.js using time.tooltipFormat from the scale config.
+  const tooltipMoney = {
+    callbacks: {
+      label: (ctx) => `${ctx.dataset.label}: ${fmt$2(ctx.parsed.y)}`,
+    },
+  };
+  const subtitlePlugin = (text) => ({
+    display: true, text, color: '#666', font: { size: 11, weight: 'normal' },
+    padding: { top: 0, bottom: 8 }, align: 'start',
+  });
+
+  // Gradient fill helper — needs the chart context
+  function makeGradient(ctx, hex, area) {
+    const grad = ctx.createLinearGradient(0, area.top, 0, area.bottom);
+    grad.addColorStop(0, hex + '55');
+    grad.addColorStop(1, hex + '00');
+    return grad;
+  }
+
+  // ── Chart rendering ──
+  function renderCharts() {
+    // Clean up previous chart instances
+    while (charts.length) charts.pop().destroy();
+
+    const sliced = filterDaily(activeSpan);
+    const points = sliced.length;
+    const dense = points >= 90;
+    const subtitle = SPAN_LABEL[activeSpan] + ` · ${points} day${points === 1 ? '' : 's'}`;
+
+    const eqXY = sliced.map(s => ({ x: s.timestamp, y: s.current_equity || 0 }));
+    const basisXY = sliced.map(s => ({ x: s.timestamp, y: s.net_cash_basis || 0 }));
+    const pnlXY = sliced.map(s => ({ x: s.timestamp, y: s.all_time_pnl || 0 }));
+    const depXY = sliced.map(s => ({ x: s.timestamp, y: s.deposits || 0 }));
+    const wdXY = sliced.map(s => ({ x: s.timestamp, y: s.withdrawals || 0 }));
+
+    // Period return: equity normalized to 100% at the start of the slice
+    const baseEquity = sliced[0].current_equity || 1;
+    const periodReturnXY = sliced.map(s => ({
+      x: s.timestamp,
+      y: baseEquity ? ((s.current_equity || 0) / baseEquity - 1) * 100 : 0,
+    }));
+
+    // Equity vs Basis — gradient under equity, dashed gray for basis
+    charts.push(new Chart(document.getElementById('eq-basis'), {
+      type: 'line',
+      data: {
+        datasets: [
+          {
+            label: 'Equity', data: eqXY,
+            borderColor: b, borderWidth: 2,
+            backgroundColor: (ctx) => {
+              const { chart } = ctx;
+              if (!chart.chartArea) return b + '22';
+              return makeGradient(chart.ctx, b, chart.chartArea);
+            },
+            fill: 'origin',
+            cubicInterpolationMode: 'monotone',
+            tension: 0.2,
+            pointRadius: dense ? 0 : 3,
+            pointHoverRadius: 5,
+          },
+          {
+            label: 'Cost Basis', data: basisXY,
+            borderColor: gray, borderWidth: 1.5, borderDash: [5, 4],
+            fill: false,
+            cubicInterpolationMode: 'monotone',
+            tension: 0.2,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: { tooltip: tooltipMoney, subtitle: subtitlePlugin(subtitle) },
+        scales: { x: xTimeScale(sliced), y: dollarTicks },
+      },
+    }));
+
+    // All-time P/L — neutral line, fill colored by sign relative to zero
+    charts.push(new Chart(document.getElementById('pnl-time'), {
+      type: 'line',
+      data: {
+        datasets: [{
+          label: 'All-time P/L', data: pnlXY,
+          borderColor: '#9ca3af', borderWidth: 1.5,
+          fill: { target: 'origin', above: g + '22', below: r + '22' },
+          cubicInterpolationMode: 'monotone',
+          tension: 0.2,
+          pointRadius: dense ? 0 : 2,
+          pointHoverRadius: 5,
+        }],
+      },
+      options: {
+        responsive: true,
+        plugins: { tooltip: tooltipMoney, subtitle: subtitlePlugin(subtitle) },
+        scales: { x: xTimeScale(sliced), y: dollarTicks },
+      },
+    }));
+
+    // Period return %
+    charts.push(new Chart(document.getElementById('period-return'), {
+      type: 'line',
+      data: {
+        datasets: [{
+          label: 'Return',
+          data: periodReturnXY,
+          borderColor: '#9ca3af', borderWidth: 1.5,
+          fill: { target: 'origin', above: g + '22', below: r + '22' },
+          cubicInterpolationMode: 'monotone',
+          tension: 0.2,
+          pointRadius: dense ? 0 : 2,
+          pointHoverRadius: 5,
+        }],
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          subtitle: subtitlePlugin(`Equity normalized to 0% at start of ${SPAN_LABEL[activeSpan].toLowerCase()}`),
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `Return: ${fmtPct(ctx.parsed.y)}`,
+            },
+          },
+        },
+        scales: {
+          x: xTimeScale(sliced),
+          y: { ticks: { callback: (v) => fmtPct(v) }, grid: { borderDash: [3, 4], color: '#222530' } },
+        },
+      },
+    }));
+
+    // Deposits vs Withdrawals — gradients
+    charts.push(new Chart(document.getElementById('dep-wd'), {
+      type: 'line',
+      data: {
+        datasets: [
+          {
+            label: 'Deposits', data: depXY,
+            borderColor: g, borderWidth: 2,
+            backgroundColor: (ctx) => {
+              const { chart } = ctx;
+              if (!chart.chartArea) return g + '22';
+              return makeGradient(chart.ctx, g, chart.chartArea);
+            },
+            fill: 'origin',
+            cubicInterpolationMode: 'monotone',
+            tension: 0.2,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+          },
+          {
+            label: 'Withdrawals', data: wdXY,
+            borderColor: r, borderWidth: 2,
+            backgroundColor: (ctx) => {
+              const { chart } = ctx;
+              if (!chart.chartArea) return r + '22';
+              return makeGradient(chart.ctx, r, chart.chartArea);
+            },
+            fill: 'origin',
+            cubicInterpolationMode: 'monotone',
+            tension: 0.2,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: { tooltip: tooltipMoney, subtitle: subtitlePlugin(subtitle) },
+        scales: { x: xTimeScale(sliced), y: dollarTicks },
+      },
+    }));
+  }
+
+  renderCharts();
+})();
+</script>

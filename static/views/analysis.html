@@ -1,11 +1,45 @@
+<style>
+.an-span-row {
+  display: flex; gap: 6px; margin: 4px 0 18px;
+  flex-wrap: wrap; align-items: center;
+}
+.an-span-row .an-span-label {
+  font-size: 11px; color: #666; text-transform: uppercase;
+  letter-spacing: 0.8px; margin-right: 6px;
+}
+.an-span {
+  padding: 6px 14px; border-radius: 8px; font-size: 12px;
+  cursor: pointer; background: transparent; color: #888;
+  border: 1px solid transparent; transition: all 0.12s;
+  font-weight: 600; letter-spacing: 0.4px;
+}
+.an-span:hover { color: #ccc; background: #1a1d27; }
+.an-span.active {
+  background: #262938; color: #fff; border-color: #3a3d4a;
+}
+.an-span.disabled { opacity: 0.35; cursor: not-allowed; }
+</style>
+
 <h1>Trade Journal Analysis</h1>
 <p class="subtitle" id="analysis-sub">Loading...</p>
 
-<div class="log-controls" style="margin-bottom:20px">
+<div class="log-controls" style="margin-bottom:14px">
   <select id="analysis-filter">
     <option value="">All Trades</option>
     <option value="SPY" selected>SPY Only</option>
   </select>
+</div>
+
+<div class="an-span-row" id="analysis-span-row" style="display:none">
+  <span class="an-span-label">Range</span>
+  <button class="an-span" data-span="1D">1D</button>
+  <button class="an-span" data-span="1W">1W</button>
+  <button class="an-span" data-span="1M">1M</button>
+  <button class="an-span" data-span="3M">3M</button>
+  <button class="an-span" data-span="6M">6M</button>
+  <button class="an-span" data-span="YTD">YTD</button>
+  <button class="an-span" data-span="1Y">1Y</button>
+  <button class="an-span" data-span="ALL">ALL</button>
 </div>
 
 <div class="kpi-row" id="analysis-kpis"></div>
@@ -48,25 +82,94 @@
   const g = '#4ade80', r = '#f87171', b = '#60a5fa', p = '#c084fc', y = '#fbbf24';
   const charts = [];
 
+  // ── Span filtering ──
+  const SPANS = {
+    '1D': 1, '1W': 7, '1M': 30, '3M': 91, '6M': 183,
+    'YTD': 'ytd', '1Y': 365, 'ALL': null,
+  };
+  const STORAGE_KEY = 'an-active-span';
+  let activeSpan = localStorage.getItem(STORAGE_KEY) || 'ALL';
+  if (!(activeSpan in SPANS)) activeSpan = 'ALL';
+  let allTrades = [];
+
+  function filterBySpan(trades, span) {
+    if (span === 'ALL' || span === null) return trades;
+    let cutoffStr;
+    if (span === 'YTD' || SPANS[span] === 'ytd') {
+      cutoffStr = new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10);
+    } else if (span === '1D') {
+      cutoffStr = new Date().toISOString().slice(0, 10);
+    } else {
+      cutoffStr = new Date(Date.now() - SPANS[span] * 86400000).toISOString().slice(0, 10);
+    }
+    return trades.filter(t => (t.date || '') >= cutoffStr);
+  }
+
+  function setupSpanRow() {
+    const spanRow = document.getElementById('analysis-span-row');
+    spanRow.style.display = '';
+    // Compute earliest trade date — disable spans bigger than data range
+    let earliestStr = '';
+    if (allTrades.length) {
+      earliestStr = allTrades.map(t => t.date || '').filter(Boolean).sort()[0] || '';
+    }
+    const earliest = earliestStr ? new Date(earliestStr + 'T00:00:00') : new Date();
+    const daysOfData = Math.floor((Date.now() - earliest.getTime()) / 86400000);
+    spanRow.querySelectorAll('.an-span').forEach(btn => {
+      const sp = btn.dataset.span;
+      const required = SPANS[sp];
+      if (typeof required === 'number' && required > daysOfData + 1 && sp !== 'ALL') {
+        btn.classList.add('disabled');
+      } else {
+        btn.classList.remove('disabled');
+      }
+      btn.classList.toggle('active', sp === activeSpan);
+      btn.onclick = () => {
+        if (btn.classList.contains('disabled')) return;
+        if (sp === activeSpan) return;
+        activeSpan = sp;
+        localStorage.setItem(STORAGE_KEY, sp);
+        spanRow.querySelectorAll('.an-span').forEach(b =>
+          b.classList.toggle('active', b.dataset.span === activeSpan));
+        rerender();
+      };
+    });
+  }
+
   async function render(symbol) {
+    const url = symbol ? '/api/trades?symbol=' + symbol : '/api/trades';
+    const fetched = await apiFetch(url);
+    if (!fetched.length) {
+      document.getElementById('analysis-sub').textContent = 'No trades found';
+      document.getElementById('analysis-span-row').style.display = 'none';
+      // Clear KPIs and charts
+      document.getElementById('analysis-kpis').innerHTML = '';
+      charts.forEach(c => c.destroy()); charts.length = 0;
+      return;
+    }
+    allTrades = fetched.map(t => ({
+      date: t.date, pl: t.pl || 0, type: t.type, day: t.day,
+      hour: t.entry_hour, vix: t.vix, qty: t.qty || 1, wl: t.wl, risk: t.risk || 0
+    }));
+    setupSpanRow();
+    rerender();
+  }
+
+  function rerender() {
     // Destroy existing charts
     charts.forEach(c => c.destroy());
     charts.length = 0;
 
-    const url = symbol ? '/api/trades?symbol=' + symbol : '/api/trades';
-    const trades = await apiFetch(url);
-    if (!trades.length) {
-      document.getElementById('analysis-sub').textContent = 'No trades found';
+    const T = filterBySpan(allTrades, activeSpan);
+    if (!T.length) {
+      document.getElementById('analysis-sub').textContent =
+        `No trades in selected range (${activeSpan})`;
+      document.getElementById('analysis-kpis').innerHTML = '';
+      document.getElementById('analysis-insight').style.display = 'none';
       return;
     }
 
-    // Build raw-like array
-    const T = trades.map(t => ({
-      date: t.date, pl: t.pl || 0, type: t.type, day: t.day,
-      hour: t.entry_hour, vix: t.vix, qty: t.qty || 1, wl: t.wl, risk: t.risk || 0
-    }));
-
-    // Cumulative P/L
+    // Cumulative P/L (within the filtered slice)
     let cum = 0;
     T.forEach(t => { cum += t.pl; t.cum = cum; });
 

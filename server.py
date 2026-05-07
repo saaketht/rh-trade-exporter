@@ -1,12 +1,21 @@
 """FastAPI dashboard server for rh-trade-exporter."""
 
+import base64
 import csv
 import json
 import os
-from datetime import datetime
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import requests
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +26,20 @@ BASE_DIR = Path(__file__).resolve().parent
 OUTPUTS_DIR = BASE_DIR / "outputs"
 STATIC_DIR = BASE_DIR / "static"
 TOKEN_FILE = BASE_DIR / ".server_token"
+RH_TOKEN_FILE = BASE_DIR / ".rh_token"
+JOBS_DIR = OUTPUTS_DIR / ".admin_jobs"
 NOTES_FILE = OUTPUTS_DIR / "journal_notes.json"
+
+# Admin job whitelist — never accept arbitrary commands.
+ADMIN_SCRIPTS = {
+    "hood":      [sys.executable, str(BASE_DIR / "hood.py")],
+    "cash_flow": [sys.executable, str(BASE_DIR / "cash_flow.py")],
+    "backfill":  [sys.executable, str(BASE_DIR / "cash_flow.py"), "--backfill"],
+}
+
+# In-memory job table. Single-worker uvicorn assumed.
+_jobs_lock = threading.Lock()
+_jobs: dict = {}  # job_id -> {state, script, started_at, ended_at, exit_code, log_path, proc}
 
 # --- Auth ---
 
@@ -182,7 +204,22 @@ def get_open(_=Depends(verify_token)):
 
 @app.get("/api/cash-flow")
 def get_cash_flow(_=Depends(verify_token)):
-    return _read_jsonl("cash_flow.jsonl")
+    """Merge historical (synthetic, from --backfill) + live snapshots.
+    Dedup by UTC date; live snapshot wins on collision (most accurate).
+    """
+    historical = _read_jsonl("cash_flow_historical.jsonl")
+    live = _read_jsonl("cash_flow.jsonl")
+    by_date: dict[str, dict] = {}
+    # Insert historical first so live overrides on the same date
+    for s in historical:
+        ts = s.get("timestamp") or ""
+        if ts:
+            by_date[ts[:10]] = s
+    for s in live:
+        ts = s.get("timestamp") or ""
+        if ts:
+            by_date[ts[:10]] = s
+    return sorted(by_date.values(), key=lambda x: x.get("timestamp", ""))
 
 @app.get("/api/summary")
 def get_summary(_=Depends(verify_token)):
@@ -229,6 +266,252 @@ async def save_note(request: Request, _=Depends(verify_token)):
         notes.pop(group_id, None)
     _write_notes(notes)
     return {"ok": True}
+
+# --- Admin: token status, token update, manual fetch runs ---
+
+def _b64url_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+
+def _decode_jwt_unverified(token: str) -> dict:
+    """Decode the JWT payload WITHOUT verifying the signature. We don't need
+    cryptographic verification — we're just reading our own copy of an RH-issued
+    token to surface the expiry. The authority on validity is RH's API itself,
+    via /user/."""
+    raw = token.strip()
+    if raw.lower().startswith("bearer "):
+        raw = raw[7:].strip()
+    parts = raw.split(".")
+    if len(parts) < 2:
+        return {}
+    try:
+        return json.loads(_b64url_decode(parts[1]))
+    except Exception:
+        return {}
+
+
+def _read_rh_token() -> Optional[str]:
+    if not RH_TOKEN_FILE.exists():
+        return None
+    raw = RH_TOKEN_FILE.read_text().strip()
+    if not raw:
+        return None
+    return raw if raw.lower().startswith("bearer ") else f"Bearer {raw}"
+
+
+def _mask_token(bearer: str) -> str:
+    """Return 'eyJhbGc…JKvLi' style masked preview."""
+    body = bearer.split(" ", 1)[1] if bearer.lower().startswith("bearer ") else bearer
+    if len(body) < 16:
+        return "***"
+    return f"{body[:8]}…{body[-6:]}"
+
+
+def _token_status_payload(probe: bool = False) -> dict:
+    bearer = _read_rh_token()
+    if not bearer:
+        return {"valid": False, "exp": None, "expires_in_seconds": None,
+                "masked": None, "probed": False}
+    payload = _decode_jwt_unverified(bearer)
+    exp = payload.get("exp")
+    now = int(time.time())
+    expires_in = (exp - now) if isinstance(exp, (int, float)) else None
+    valid_by_exp = expires_in is not None and expires_in > 0
+    out = {
+        "valid": valid_by_exp,
+        "exp": (datetime.fromtimestamp(exp, tz=timezone.utc).isoformat() if exp else None),
+        "expires_in_seconds": expires_in,
+        "masked": _mask_token(bearer),
+        "probed": False,
+    }
+    if probe:
+        try:
+            r = requests.get("https://api.robinhood.com/user/",
+                             headers={"Authorization": bearer, "Accept": "application/json",
+                                      "User-Agent": "Mozilla/5.0"},
+                             timeout=10)
+            out["probed"] = True
+            out["probe_ok"] = (r.status_code == 200)
+            out["probe_status"] = r.status_code
+            if r.status_code != 200:
+                out["valid"] = False
+        except requests.RequestException as e:
+            out["probed"] = True
+            out["probe_ok"] = False
+            out["probe_error"] = str(e)[:200]
+    return out
+
+
+@app.get("/api/admin/token-status")
+def admin_token_status(probe: bool = Query(False), _=Depends(verify_token)):
+    return _token_status_payload(probe=probe)
+
+
+_BEARER_RE = re.compile(r"Bearer\s+([A-Za-z0-9._\-]+)", re.IGNORECASE)
+
+
+def _extract_token(blob: str) -> Optional[str]:
+    """Pull a Bearer token out of: a raw JWT, 'Bearer <jwt>', or a curl-paste
+    that contains a -H 'Authorization: Bearer <jwt>' line."""
+    if not blob:
+        return None
+    blob = blob.strip()
+    m = _BEARER_RE.search(blob)
+    if m:
+        return f"Bearer {m.group(1)}"
+    # Maybe just a raw JWT
+    if re.fullmatch(r"[A-Za-z0-9._\-]+", blob) and blob.count(".") >= 2:
+        return f"Bearer {blob}"
+    return None
+
+
+@app.post("/api/admin/token")
+async def admin_set_token(request: Request, _=Depends(verify_token)):
+    body = await request.json()
+    raw = body.get("token", "") or body.get("blob", "")
+    bearer = _extract_token(raw)
+    if not bearer:
+        raise HTTPException(status_code=400,
+                            detail="Could not find a Bearer token in input")
+    # Validate against RH before persisting
+    try:
+        r = requests.get("https://api.robinhood.com/user/",
+                         headers={"Authorization": bearer, "Accept": "application/json",
+                                  "User-Agent": "Mozilla/5.0"},
+                         timeout=10)
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach RH: {e}")
+    if r.status_code == 401:
+        raise HTTPException(status_code=400, detail="RH rejected the token (401)")
+    if r.status_code != 200:
+        raise HTTPException(status_code=400,
+                            detail=f"RH returned HTTP {r.status_code}; not saving")
+    # Atomic write with chmod 600
+    RH_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".rh_token.", dir=str(RH_TOKEN_FILE.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(bearer + "\n")
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, RH_TOKEN_FILE)
+    except Exception:
+        try: os.unlink(tmp_path)
+        except FileNotFoundError: pass
+        raise
+    return _token_status_payload(probe=False)
+
+
+def _any_running_job() -> Optional[str]:
+    with _jobs_lock:
+        for jid, job in _jobs.items():
+            if job.get("state") == "running":
+                return jid
+    return None
+
+
+def _spawn_job(script: str) -> str:
+    cmd = ADMIN_SCRIPTS[script]
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    job_id = uuid.uuid4().hex[:12]
+    log_path = JOBS_DIR / f"{job_id}.log"
+    log_file = open(log_path, "w")
+    proc = subprocess.Popen(
+        cmd, cwd=str(BASE_DIR),
+        stdout=log_file, stderr=subprocess.STDOUT,
+        bufsize=1, text=True,
+    )
+    job = {
+        "id": job_id,
+        "script": script,
+        "state": "running",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "ended_at": None,
+        "exit_code": None,
+        "log_path": str(log_path),
+        "proc": proc,
+        "log_file_handle": log_file,
+    }
+    with _jobs_lock:
+        _jobs[job_id] = job
+
+    # Watcher thread: when proc finishes, flip state and close handle
+    def _watch():
+        rc = proc.wait()
+        with _jobs_lock:
+            job["state"] = "done" if rc == 0 else "failed"
+            job["exit_code"] = rc
+            job["ended_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            log_file.flush()
+            log_file.close()
+        except Exception:
+            pass
+
+    threading.Thread(target=_watch, daemon=True).start()
+    return job_id
+
+
+def _job_payload(job: dict, log_tail_bytes: int = 4096) -> dict:
+    log_path = Path(job["log_path"])
+    log_tail = ""
+    if log_path.exists():
+        try:
+            size = log_path.stat().st_size
+            with open(log_path, "rb") as f:
+                if size > log_tail_bytes:
+                    f.seek(size - log_tail_bytes)
+                log_tail = f.read().decode("utf-8", errors="replace")
+        except OSError:
+            pass
+    return {
+        "id": job["id"],
+        "script": job["script"],
+        "state": job["state"],
+        "started_at": job["started_at"],
+        "ended_at": job["ended_at"],
+        "exit_code": job["exit_code"],
+        "log_tail": log_tail,
+    }
+
+
+@app.post("/api/admin/run")
+async def admin_run(request: Request, _=Depends(verify_token)):
+    body = await request.json()
+    script = body.get("script", "")
+    if script not in ADMIN_SCRIPTS:
+        raise HTTPException(status_code=400,
+                            detail=f"Unknown script. Allowed: {sorted(ADMIN_SCRIPTS)}")
+    busy = _any_running_job()
+    if busy:
+        raise HTTPException(status_code=409,
+                            detail=f"Another job is running ({busy}); wait for it to finish")
+    jid = _spawn_job(script)
+    with _jobs_lock:
+        return _job_payload(_jobs[jid])
+
+
+@app.get("/api/admin/run/{job_id}")
+def admin_run_status(job_id: str, _=Depends(verify_token)):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="No such job")
+    return _job_payload(job)
+
+
+@app.get("/api/admin/runs")
+def admin_recent_runs(_=Depends(verify_token)):
+    """List recent jobs (newest first), small payload — for showing history."""
+    with _jobs_lock:
+        jobs = list(_jobs.values())
+    jobs.sort(key=lambda j: j.get("started_at") or "", reverse=True)
+    return [{
+        "id": j["id"], "script": j["script"], "state": j["state"],
+        "started_at": j["started_at"], "ended_at": j["ended_at"],
+        "exit_code": j["exit_code"],
+    } for j in jobs[:20]]
+
 
 # --- Dashboard route ---
 

@@ -228,7 +228,7 @@
       if (t.wl === 'LOSS') g.losses++;
       if (t.type === 'Put') g.puts++; else g.calls++;
     });
-    const grouped = Object.values(dateGroups).sort((a, b) => a.date.localeCompare(b.date));
+    const grouped = Object.values(dateGroups);
 
     const content = document.getElementById('pt-content');
     content.innerHTML =
@@ -241,11 +241,13 @@
         ['Put P/L', plStr(putPL), clr(putPL)],
         ['Call P/L', plStr(callPL), clr(callPL)],
       ]) +
-      `<div class="card-grid">${grouped.map(makeCard).join('')}</div>`;
+      sortBar() +
+      `<div class="card-grid">${sortDays(grouped).map(makeCard).join('')}</div>`;
 
     document.querySelectorAll('#hour-tabs .tab').forEach(t => {
       t.onclick = () => { activeHour = +t.dataset.h; renderHour(); };
     });
+    bindSort(renderHour);
   }
 
   // --- Tab switching ---

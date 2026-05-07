@@ -344,12 +344,44 @@ class TestOtherEndpoints:
 
     def test_cash_flow_reads_jsonl(self, client, tmp_outputs):
         (tmp_outputs / "cash_flow.jsonl").write_text(
-            '{"date":"2026-03-05","equity":10000}\n'
-            '{"date":"2026-03-06","equity":10200}\n'
+            '{"timestamp":"2026-03-05T16:00:00+00:00","equity":10000}\n'
+            '{"timestamp":"2026-03-06T16:00:00+00:00","equity":10200}\n'
         )
         data = client.get("/api/cash-flow").json()
         assert len(data) == 2
         assert data[0]["equity"] == 10000
+
+    def test_cash_flow_merges_historical_and_live(self, client, tmp_outputs):
+        """Historical (synthetic) merges with live; live wins on date collision."""
+        (tmp_outputs / "cash_flow_historical.jsonl").write_text(
+            '{"timestamp":"2024-01-01T20:00:00+00:00","equity":500,"synthetic":true}\n'
+            '{"timestamp":"2024-06-01T20:00:00+00:00","equity":700,"synthetic":true}\n'
+            '{"timestamp":"2026-03-05T20:00:00+00:00","equity":900,"synthetic":true}\n'
+        )
+        (tmp_outputs / "cash_flow.jsonl").write_text(
+            # Same date as last historical line — live should win
+            '{"timestamp":"2026-03-05T22:00:00+00:00","equity":950,"synthetic":false}\n'
+            '{"timestamp":"2026-03-06T22:00:00+00:00","equity":1000}\n'
+        )
+        data = client.get("/api/cash-flow").json()
+        # 4 unique dates: 2024-01-01, 2024-06-01, 2026-03-05, 2026-03-06
+        assert len(data) == 4
+        # Sorted ascending
+        assert data[0]["timestamp"].startswith("2024-01-01")
+        assert data[-1]["timestamp"].startswith("2026-03-06")
+        # On the 2026-03-05 collision, live (equity=950) wins
+        on_clash = [d for d in data if d["timestamp"].startswith("2026-03-05")][0]
+        assert on_clash["equity"] == 950
+        assert on_clash.get("synthetic") is False
+
+    def test_cash_flow_historical_only(self, client, tmp_outputs):
+        """If only the historical file exists, it's still served."""
+        (tmp_outputs / "cash_flow_historical.jsonl").write_text(
+            '{"timestamp":"2024-01-01T20:00:00+00:00","equity":500,"synthetic":true}\n'
+        )
+        data = client.get("/api/cash-flow").json()
+        assert len(data) == 1
+        assert data[0]["equity"] == 500
 
 
 # ──────────────────────────────────────────────
@@ -407,3 +439,231 @@ class TestColumnMap:
     def test_no_duplicate_json_keys(self):
         values = list(COLUMN_MAP.values())
         assert len(values) == len(set(values)), "Duplicate JSON keys in COLUMN_MAP"
+
+
+# ──────────────────────────────────────────────
+# Admin: token status, token update, run jobs
+# ──────────────────────────────────────────────
+
+import base64 as _b64
+import json as _json
+import time as _time
+from unittest.mock import MagicMock
+
+
+def _make_jwt(exp_ts: int) -> str:
+    """Make a fake JWT with the given exp claim. Signature isn't verified."""
+    h = _b64.urlsafe_b64encode(_json.dumps({"alg": "ES256"}).encode()).rstrip(b"=").decode()
+    p = _b64.urlsafe_b64encode(_json.dumps({"exp": int(exp_ts)}).encode()).rstrip(b"=").decode()
+    s = "x" * 30  # not validated
+    return f"{h}.{p}.{s}"
+
+
+@pytest.fixture
+def admin_env(tmp_path):
+    """Patch server paths into a temp dir, reset job state."""
+    rh_token_file = tmp_path / ".rh_token"
+    jobs_dir = tmp_path / ".admin_jobs"
+    with patch.object(server, "RH_TOKEN_FILE", rh_token_file), \
+         patch.object(server, "JOBS_DIR", jobs_dir), \
+         patch.object(server, "OUTPUTS_DIR", tmp_path):
+        # Reset job table
+        with server._jobs_lock:
+            server._jobs.clear()
+        yield {"rh_token_file": rh_token_file, "jobs_dir": jobs_dir, "tmp": tmp_path}
+
+
+class TestTokenStatus:
+    def test_no_token_returns_invalid(self, client, admin_env):
+        r = client.get("/api/admin/token-status")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["valid"] is False
+        assert d["masked"] is None
+        assert d["exp"] is None
+
+    def test_active_token_decodes_exp(self, client, admin_env):
+        future = int(_time.time()) + 3600
+        admin_env["rh_token_file"].write_text(f"Bearer {_make_jwt(future)}")
+        d = client.get("/api/admin/token-status").json()
+        assert d["valid"] is True
+        assert d["expires_in_seconds"] is not None
+        assert 3500 <= d["expires_in_seconds"] <= 3600
+        assert d["masked"] is not None
+        assert "…" in d["masked"]
+
+    def test_expired_token_invalid(self, client, admin_env):
+        past = int(_time.time()) - 60
+        admin_env["rh_token_file"].write_text(f"Bearer {_make_jwt(past)}")
+        d = client.get("/api/admin/token-status").json()
+        assert d["valid"] is False
+        assert d["expires_in_seconds"] < 0
+
+    def test_token_without_bearer_prefix(self, client, admin_env):
+        future = int(_time.time()) + 7200
+        admin_env["rh_token_file"].write_text(_make_jwt(future))  # no 'Bearer'
+        d = client.get("/api/admin/token-status").json()
+        assert d["valid"] is True
+
+    def test_probe_hits_rh(self, client, admin_env):
+        future = int(_time.time()) + 3600
+        admin_env["rh_token_file"].write_text(f"Bearer {_make_jwt(future)}")
+        mock_resp = MagicMock(); mock_resp.status_code = 200
+        with patch.object(server.requests, "get", return_value=mock_resp) as mg:
+            d = client.get("/api/admin/token-status?probe=true").json()
+        assert d["probed"] is True
+        assert d["probe_ok"] is True
+        assert d["probe_status"] == 200
+        # Probe should have called RH
+        assert any("api.robinhood.com/user" in str(c) for c in mg.call_args_list)
+
+    def test_probe_401_invalidates(self, client, admin_env):
+        future = int(_time.time()) + 3600
+        admin_env["rh_token_file"].write_text(f"Bearer {_make_jwt(future)}")
+        mock_resp = MagicMock(); mock_resp.status_code = 401
+        with patch.object(server.requests, "get", return_value=mock_resp):
+            d = client.get("/api/admin/token-status?probe=true").json()
+        assert d["valid"] is False
+        assert d["probe_ok"] is False
+
+    def test_token_status_requires_auth(self, authed_client, admin_env):
+        r = authed_client.get("/api/admin/token-status")
+        assert r.status_code == 401
+
+
+class TestExtractToken:
+    def test_raw_jwt(self):
+        jwt = _make_jwt(_time.time() + 3600)
+        assert server._extract_token(jwt) == f"Bearer {jwt}"
+
+    def test_bearer_prefix(self):
+        jwt = _make_jwt(_time.time() + 3600)
+        assert server._extract_token(f"Bearer {jwt}") == f"Bearer {jwt}"
+
+    def test_authorization_header(self):
+        jwt = _make_jwt(_time.time() + 3600)
+        assert server._extract_token(f"Authorization: Bearer {jwt}") == f"Bearer {jwt}"
+
+    def test_curl_paste(self):
+        jwt = _make_jwt(_time.time() + 3600)
+        curl = f"""curl 'https://x' -X 'GET' \\
+            -H 'Authorization: Bearer {jwt}' \\
+            -H 'Other: stuff'"""
+        assert server._extract_token(curl) == f"Bearer {jwt}"
+
+    def test_empty_returns_none(self):
+        assert server._extract_token("") is None
+        assert server._extract_token("   ") is None
+        assert server._extract_token("not a token") is None
+
+
+class TestSetToken:
+    def test_rh_validates_and_saves(self, client, admin_env):
+        jwt = _make_jwt(_time.time() + 3600)
+        mock_resp = MagicMock(); mock_resp.status_code = 200
+        with patch.object(server.requests, "get", return_value=mock_resp):
+            r = client.post("/api/admin/token", json={"token": f"Bearer {jwt}"})
+        assert r.status_code == 200
+        assert admin_env["rh_token_file"].exists()
+        saved = admin_env["rh_token_file"].read_text()
+        assert jwt in saved
+        assert saved.startswith("Bearer ")
+        # 600 perms
+        st = admin_env["rh_token_file"].stat()
+        assert (st.st_mode & 0o777) == 0o600
+
+    def test_rh_401_does_not_save(self, client, admin_env):
+        jwt = _make_jwt(_time.time() + 3600)
+        mock_resp = MagicMock(); mock_resp.status_code = 401
+        with patch.object(server.requests, "get", return_value=mock_resp):
+            r = client.post("/api/admin/token", json={"token": f"Bearer {jwt}"})
+        assert r.status_code == 400
+        assert not admin_env["rh_token_file"].exists()
+
+    def test_garbage_input_400(self, client, admin_env):
+        r = client.post("/api/admin/token", json={"token": "complete nonsense"})
+        assert r.status_code == 400
+        assert not admin_env["rh_token_file"].exists()
+
+    def test_set_token_requires_auth(self, authed_client, admin_env):
+        r = authed_client.post("/api/admin/token", json={"token": "x"})
+        assert r.status_code == 401
+
+
+class TestRunJobs:
+    def test_unknown_script_400(self, client, admin_env):
+        r = client.post("/api/admin/run", json={"script": "rm-rf"})
+        assert r.status_code == 400
+        assert "Allowed" in r.json()["detail"]
+
+    def test_run_spawns_and_completes(self, client, admin_env):
+        # Use a fake Popen that finishes immediately and writes to the log
+        class FakeProc:
+            returncode = 0
+            def __init__(self, *a, **kw):
+                # Write some output to the log file before "finishing"
+                if "stdout" in kw and hasattr(kw["stdout"], "write"):
+                    kw["stdout"].write("hello from job\n")
+                    kw["stdout"].flush()
+            def wait(self):
+                return 0
+        with patch.object(server.subprocess, "Popen", FakeProc):
+            r = client.post("/api/admin/run", json={"script": "cash_flow"})
+        assert r.status_code == 200
+        d = r.json()
+        assert d["script"] == "cash_flow"
+        assert d["state"] in ("running", "done")  # watcher thread may or may not have flipped
+
+        # Wait briefly for the watcher thread to flip state
+        for _ in range(20):
+            r2 = client.get(f"/api/admin/run/{d['id']}")
+            if r2.json()["state"] == "done":
+                break
+            _time.sleep(0.05)
+        final = client.get(f"/api/admin/run/{d['id']}").json()
+        assert final["state"] == "done"
+        assert final["exit_code"] == 0
+        assert "hello from job" in final["log_tail"]
+
+    def test_concurrent_run_409s(self, client, admin_env):
+        # Stub a still-running job in the table
+        with server._jobs_lock:
+            server._jobs["existing"] = {
+                "id": "existing", "script": "hood", "state": "running",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "ended_at": None, "exit_code": None,
+                "log_path": str(admin_env["jobs_dir"] / "existing.log"),
+            }
+        r = client.post("/api/admin/run", json={"script": "cash_flow"})
+        assert r.status_code == 409
+        assert "existing" in r.json()["detail"]
+
+    def test_status_404_for_unknown_job(self, client, admin_env):
+        r = client.get("/api/admin/run/does-not-exist")
+        assert r.status_code == 404
+
+    def test_run_requires_auth(self, authed_client, admin_env):
+        r = authed_client.post("/api/admin/run", json={"script": "cash_flow"})
+        assert r.status_code == 401
+
+    def test_recent_runs_listing(self, client, admin_env):
+        with server._jobs_lock:
+            server._jobs["a"] = {
+                "id": "a", "script": "cash_flow", "state": "done",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "ended_at": "2026-01-01T00:00:30+00:00", "exit_code": 0,
+                "log_path": "x",
+            }
+            server._jobs["b"] = {
+                "id": "b", "script": "hood", "state": "failed",
+                "started_at": "2026-01-02T00:00:00+00:00",
+                "ended_at": "2026-01-02T00:00:05+00:00", "exit_code": 1,
+                "log_path": "x",
+            }
+        d = client.get("/api/admin/runs").json()
+        assert len(d) == 2
+        # Newest first
+        assert d[0]["id"] == "b"
+        assert d[0]["state"] == "failed"
+        # No log_path / log_tail in the listing
+        assert "log_path" not in d[0]
