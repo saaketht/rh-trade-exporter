@@ -48,6 +48,288 @@ def paginate(url: str, hdrs: dict) -> list:
     return results
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Backfill helpers (used by --backfill to reconstruct per-day historical snapshots)
+# ──────────────────────────────────────────────────────────────────────────────
+
+PERF_HEADERS_EXTRA = {
+    "Origin": "https://robinhood.com",
+    "Referer": "https://robinhood.com/",
+    "X-TimeZone-Id": "America/New_York",
+    "X-Hyper-Ex": "enabled",
+    "Accept": "*/*",
+}
+
+
+def fetch_portfolio_performance(account_number: str, hdrs: dict) -> list:
+    """Fetch the historical equity chart for one account.
+    Returns list of (date_iso, equity_dollars) tuples sorted ascending.
+
+    Endpoint reverse-engineered from RH web app: bonfire chart data with
+    ~309 points across all-time. Date strings come labeled (e.g. "Jun 8, 2020")
+    and dollar amounts as decimal strings inside cursor_data.
+    """
+    h = {**hdrs, **PERF_HEADERS_EXTRA}
+    url = (
+        f"{BONFIRE_BASE}/portfolio/performance/{account_number}"
+        "?chart_style=PERFORMANCE&chart_type=historical_portfolio"
+        "&display_span=all&include_all_hours=true"
+    )
+    r = requests.get(url, headers=h)
+    if r.status_code != 200:
+        return []
+    d = r.json()
+    out = []
+    for line in d.get("lines", []) or []:
+        for seg in line.get("segments", []) or []:
+            for p in seg.get("points", []) or []:
+                cd = p.get("cursor_data") or {}
+                label = (cd.get("label") or {}).get("value")
+                pcd = (cd.get("price_chart_data") or {}).get("dollar_value") or {}
+                amt = pcd.get("amount")
+                if not label or amt is None:
+                    continue
+                try:
+                    iso = datetime.strptime(label, "%b %d, %Y").strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+                try:
+                    out.append((iso, float(amt)))
+                except (TypeError, ValueError):
+                    continue
+    out.sort()
+    return out
+
+
+def total_equity_by_date(per_account_series: dict) -> dict:
+    """Given {account_number: [(date, equity), ...]} (each sorted asc), return
+    {date_iso: total_equity_summed_across_accounts}. Carries forward each
+    account's last-known equity until the next data point. Accounts with no
+    data on/before a date contribute 0 (e.g. cash sub-account before opening).
+    """
+    if not per_account_series:
+        return {}
+    all_dates = sorted({d for series in per_account_series.values() for d, _ in series})
+    last_known = {acct: 0.0 for acct in per_account_series}
+    idx = {acct: 0 for acct in per_account_series}
+    out = {}
+    for d in all_dates:
+        for acct, series in per_account_series.items():
+            while idx[acct] < len(series) and series[idx[acct]][0] <= d:
+                last_known[acct] = series[idx[acct]][1]
+                idx[acct] += 1
+        out[d] = round(sum(last_known.values()), 2)
+    return out
+
+
+def collect_dated_cashflows(transfers: list, fees: list, divs: list, refs: list) -> dict:
+    """Walk the same data main() iterates, but emit (date, amount) tuples for
+    each completed cashflow event so we can compute as-of cumulative totals
+    for any historical date.
+
+    Returns dict with keys: deposits, withdrawals, gold, dividends, referrals
+    Each value is a list of (date_iso, amount) sorted asc by date.
+    """
+    deposits, withdrawals = [], []
+    for t in transfers:
+        if t.get("state") not in ("completed", "submitted"):
+            # Only completed transfers count toward historical basis.
+            # 'submitted' shows up briefly post-completion; treat as completed.
+            if t.get("state") != "completed":
+                continue
+        try:
+            amt = float(t.get("amount", 0))
+        except (TypeError, ValueError):
+            continue
+        direction = t.get("direction", "?")
+        transfer_type = t.get("transfer_type", "")
+        orig = t.get("originating_account_type", "")
+        recv = t.get("receiving_account_type", "")
+        date = (t.get("created_at") or "")[:10]
+        if not date:
+            continue
+        # Same classifier as main()
+        if transfer_type == "internal" or (orig == "rhs_account" and recv == "rhs_account"):
+            continue  # internal, excluded
+        if orig and recv:
+            if recv == "rhs_account" and orig != "rhs_account":
+                deposits.append((date, amt))
+            elif orig == "rhs_account" and recv != "rhs_account":
+                if direction == "pull":
+                    deposits.append((date, amt))
+                else:
+                    withdrawals.append((date, amt))
+        else:
+            if direction == "pull":
+                deposits.append((date, amt))
+            elif direction == "push":
+                withdrawals.append((date, amt))
+
+    gold = []
+    for f in fees:
+        try:
+            amt = float(f["amount"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        date = f.get("date")
+        if date:
+            gold.append((date, amt))
+
+    dividends = []
+    for d in divs:
+        if d.get("state") == "voided":
+            continue
+        try:
+            amt = float(d["amount"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        date = d.get("payable_date")
+        if date:
+            dividends.append((date, amt))
+
+    referrals = []
+    for ref in refs:
+        reward = ref.get("reward") or {}
+        date = (ref.get("created_at") or "")[:10]
+        if not date:
+            continue
+        for s in reward.get("stocks") or []:
+            if s.get("state") in ("failed", "voided"):
+                continue
+            try:
+                cost = float(s.get("cost_basis", 0))
+            except (TypeError, ValueError):
+                continue
+            referrals.append((date, cost))
+        cash_reward = reward.get("cash")
+        if cash_reward and cash_reward.get("state") not in ("failed", "voided"):
+            try:
+                referrals.append((date, float(cash_reward.get("amount", 0))))
+            except (TypeError, ValueError):
+                pass
+
+    for lst in (deposits, withdrawals, gold, dividends, referrals):
+        lst.sort()
+
+    return {
+        "deposits": deposits,
+        "withdrawals": withdrawals,
+        "gold": gold,
+        "dividends": dividends,
+        "referrals": referrals,
+    }
+
+
+def build_historical_snapshots(equity_by_date: dict, dated: dict) -> list:
+    """For each date with a known equity value, compute the as-of cashflow
+    cumulative totals and derive a synthetic snapshot.
+    """
+    if not equity_by_date:
+        return []
+    dates = sorted(equity_by_date.keys())
+
+    # Walk dated lists with pointers, accumulating running totals.
+    pointers = {k: 0 for k in dated}
+    running = {k: 0.0 for k in dated}
+
+    snapshots = []
+    for d in dates:
+        for k, lst in dated.items():
+            while pointers[k] < len(lst) and lst[pointers[k]][0] <= d:
+                running[k] += lst[pointers[k]][1]
+                pointers[k] += 1
+
+        deposits = running["deposits"]
+        withdrawals = running["withdrawals"]
+        gold = running["gold"]
+        dividends = running["dividends"]
+        referrals = running["referrals"]
+        net_deposited = deposits - withdrawals
+        basis = net_deposited - gold + dividends + referrals
+        equity = equity_by_date[d]
+        pnl = equity - basis
+        pnl_pct = (pnl / deposits * 100) if deposits else 0
+        total_return = equity + withdrawals - deposits
+        tr_pct = (total_return / deposits * 100) if deposits else 0
+
+        snapshots.append({
+            # Use 16:00 ET (20:00 UTC) so timestamp sorts cleanly relative to
+            # live snapshots that are mostly from afternoon cron runs.
+            "timestamp": f"{d}T20:00:00+00:00",
+            "deposits": round(deposits, 2),
+            "withdrawals": round(withdrawals, 2),
+            "deposits_pending": 0.0,
+            "withdrawals_pending": 0.0,
+            "net_deposited": round(net_deposited, 2),
+            "gold_fees": round(gold, 2),
+            "dividends": round(dividends, 2),
+            "referral_grants": round(referrals, 2),
+            "net_cash_basis": round(basis, 2),
+            "current_equity": round(equity, 2),
+            "all_time_pnl": round(pnl, 2),
+            "all_time_pnl_pct": round(pnl_pct, 1),
+            "total_return": round(total_return, 2),
+            "total_return_pct": round(tr_pct, 1),
+            "synthetic": True,
+        })
+    return snapshots
+
+
+def cmd_backfill(as_json: bool = False) -> None:
+    """Reconstruct historical per-day portfolio snapshots from RH's web chart
+    endpoint plus all dated cashflows. Overwrites cash_flow_historical.jsonl.
+    """
+    token = load_token()
+    hdrs = headers(token)
+    log = (lambda *a, **k: None) if as_json else print
+
+    r = requests.get(f"{API_BASE}/user/", headers=hdrs)
+    if r.status_code == 401:
+        print("❌ Token expired. Grab a fresh one from browser DevTools.", file=sys.stderr)
+        sys.exit(1)
+
+    log("⏳ Backfilling historical snapshots from /portfolio/performance/")
+    log("=" * 75)
+
+    # Pull all the same source data main() does
+    transfers = paginate(f"{BONFIRE_BASE}/paymenthub/unified_transfers/", hdrs)
+    fees = paginate(f"{API_BASE}/subscription/subscription_fees/", hdrs)
+    divs = paginate(f"{API_BASE}/dividends/", hdrs)
+    refs = paginate(f"{API_BASE}/midlands/referral/", hdrs)
+    log(f"  pulled {len(transfers)} transfers, {len(fees)} fees, {len(divs)} dividends, {len(refs)} referrals")
+
+    dated = collect_dated_cashflows(transfers, fees, divs, refs)
+    log(f"  {len(dated['deposits'])} completed deposits, {len(dated['withdrawals'])} withdrawals")
+
+    # Account list
+    accts_file = SCRIPT_DIR / ".rh_accounts.json"
+    if accts_file.exists():
+        account_numbers = json.loads(accts_file.read_text()).get("account_numbers", [])
+    else:
+        accts = paginate(f"{API_BASE}/accounts/", hdrs)
+        account_numbers = [a["account_number"] for a in accts]
+
+    per_account = {}
+    for acct_num in account_numbers:
+        series = fetch_portfolio_performance(acct_num, hdrs)
+        per_account[acct_num] = series
+        log(f"  account {acct_num}: {len(series)} historical points"
+            + (f" ({series[0][0]} → {series[-1][0]})" if series else ""))
+
+    equity_by_date = total_equity_by_date(per_account)
+    snapshots = build_historical_snapshots(equity_by_date, dated)
+
+    out_file = SCRIPT_DIR / "outputs" / "cash_flow_historical.jsonl"
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_file, "w") as f:
+        for s in snapshots:
+            f.write(json.dumps(s) + "\n")
+
+    log(f"\n✅ Wrote {len(snapshots)} synthetic snapshots → {out_file.name}")
+    if snapshots:
+        log(f"   range: {snapshots[0]['timestamp'][:10]} → {snapshots[-1]['timestamp'][:10]}")
+
+
 def main(as_json=False):
     token = load_token()
     hdrs = headers(token)
@@ -80,14 +362,40 @@ def main(as_json=False):
         state = t.get("state", "?")
         direction = t.get("direction", "?")
         transfer_type = t.get("transfer_type", "")
+        orig = t.get("originating_account_type", "")
+        recv = t.get("receiving_account_type", "")
         dt = t.get("created_at", "")[:10]
+        details = t.get("details") or {}
+        note = details.get("originator_name") or details.get("description") or ""
 
-        # Skip internal inter-account transfers (margin ↔ cash) — money stays in RH
-        is_internal = transfer_type == "internal"
+        # Classify money flow from the user's perspective.
+        # Account-type pair is the unambiguous money-flow signal; the top-level
+        # `direction` field encodes the originator's verb, not the user's perspective.
+        # An IRS tax refund (non_originated_ach, external→rhs_account, direction=push)
+        # is a deposit even though direction=push.
+        if transfer_type == "internal" or (orig == "rhs_account" and recv == "rhs_account"):
+            category = "internal"
+        elif orig and recv:
+            if recv == "rhs_account" and orig != "rhs_account":
+                category = "deposit"
+            elif orig == "rhs_account" and recv != "rhs_account":
+                category = "deposit" if direction == "pull" else "withdrawal"
+            else:
+                log(f"  ⚠️  unknown transfer shape: {transfer_type} {direction} {orig}→{recv} ${amt}")
+                continue
+        else:
+            # Fallback when account-type fields are absent: use direction alone.
+            if direction == "pull":
+                category = "deposit"
+            elif direction == "push":
+                category = "withdrawal"
+            else:
+                log(f"  ⚠️  unknown transfer shape: {transfer_type} {direction} ${amt}")
+                continue
 
-        if direction == "pull":
+        if category == "deposit":
             flow = "         ACH → account "
-        elif is_internal:
+        elif category == "internal":
             flow = "     account → account "
         else:
             flow = "     account → ACH     "
@@ -96,25 +404,31 @@ def main(as_json=False):
             label = "  ✗"
         elif state == "pending":
             label = "  ⏳"
-        elif is_internal:
+        elif category == "internal":
             label = "  ↔"
         else:
             label = "  ✓"
 
-        suffix = "  (internal, excluded)" if is_internal else ""
+        suffix = ""
+        if category == "internal":
+            suffix = "  (internal, excluded)"
+        elif note:
+            suffix = f"  [{transfer_type}: {note}]"
+        elif transfer_type:
+            suffix = f"  [{transfer_type}]"
         log(f"{label} {dt}  {flow}  ${amt:>10,.2f}  {state}{suffix}")
 
         if state == "failed":
             continue
-        if is_internal:
+        if category == "internal":
             internal_total += amt
             continue
-        if direction == "pull":  # deposit
+        if category == "deposit":
             if state == "pending":
                 deposits_pending += amt
             else:
                 deposits_completed += amt
-        elif direction == "push":  # withdrawal
+        elif category == "withdrawal":
             if state == "pending":
                 withdrawals_pending += amt
             else:
@@ -201,6 +515,7 @@ def main(as_json=False):
         account_numbers = [a["account_number"] for a in accts]
 
     equity = 0.0
+    accounts_breakdown = []
     for acct_num in account_numbers:
         r = requests.get(f"{API_BASE}/accounts/{acct_num}/", headers=hdrs)
         if r.status_code != 200:
@@ -218,6 +533,12 @@ def main(as_json=False):
             eq = cash  # cash-only account
 
         equity += eq
+        accounts_breakdown.append({
+            "type": acct_type,
+            "account_number": acct_num,
+            "equity": round(eq, 2),
+            "cash": round(cash, 2),
+        })
         log(f"  {acct_type:<12} ({acct_num}):  ${eq:>10,.2f}")
 
     log(f"\n  Total equity: ${equity:>10,.2f}")
@@ -236,8 +557,11 @@ def main(as_json=False):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "deposits": round(deposits_completed, 2),
         "withdrawals": round(withdrawals_completed, 2),
+        "deposits_pending": round(deposits_pending, 2),
+        "withdrawals_pending": round(withdrawals_pending, 2),
         "net_deposited": round(net_deposited, 2),
         "gold_fees": round(total_gold, 2),
+        "gold_months": len(fees),
         "dividends": round(total_div, 2),
         "referral_grants": round(total_referral, 2),
         "net_cash_basis": round(cost_basis, 2),
@@ -246,6 +570,7 @@ def main(as_json=False):
         "all_time_pnl_pct": round(pnl_pct, 1),
         "total_return": round(total_return, 2),
         "total_return_pct": round(tr_pct, 1),
+        "accounts": accounts_breakdown,
     }
     out_file = SCRIPT_DIR / "outputs" / "cash_flow.jsonl"
     out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -288,5 +613,10 @@ def main(as_json=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", action="store_true", help="Output summary as JSON")
+    parser.add_argument("--backfill", action="store_true",
+                        help="One-shot: rebuild cash_flow_historical.jsonl from RH's portfolio chart endpoint")
     args = parser.parse_args()
-    main(as_json=args.json)
+    if args.backfill:
+        cmd_backfill(as_json=args.json)
+    else:
+        main(as_json=args.json)
