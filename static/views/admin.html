@@ -1,0 +1,368 @@
+<style>
+.adm-section {
+  background: #1a1d27; border-radius: 12px; padding: 22px 24px;
+  margin-bottom: 18px;
+}
+.adm-section h2 {
+  font-size: 15px; font-weight: 600; margin-bottom: 14px; color: #ccc;
+}
+.adm-status {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+}
+.adm-light {
+  width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0;
+  box-shadow: 0 0 12px currentColor;
+}
+.adm-light.green { background: #4ade80; color: #4ade8055; }
+.adm-light.amber { background: #fbbf24; color: #fbbf2455; }
+.adm-light.red { background: #f87171; color: #f8717155; }
+.adm-light.gray { background: #555; color: transparent; box-shadow: none; }
+
+.adm-status-text { display: flex; flex-direction: column; gap: 2px; }
+.adm-status-headline { font-size: 16px; font-weight: 600; color: #fff; }
+.adm-status-detail { font-size: 12px; color: #888; font-variant-numeric: tabular-nums; }
+
+.adm-token-meta {
+  font-family: ui-monospace, monospace; font-size: 11px; color: #777;
+  margin-top: 4px;
+}
+
+.adm-btn {
+  padding: 8px 14px; border-radius: 8px; font-size: 13px;
+  cursor: pointer; background: #262938; color: #ddd; border: 1px solid #3a3d4a;
+  transition: all 0.15s; font-weight: 500;
+}
+.adm-btn:hover:not(:disabled) { background: #2f3344; color: #fff; }
+.adm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.adm-btn.primary {
+  background: #3b4a8b; border-color: #5060a8; color: #fff;
+}
+.adm-btn.primary:hover:not(:disabled) { background: #4456a3; }
+.adm-btn.danger { color: #f87171; }
+
+.adm-textarea {
+  width: 100%; min-height: 80px; max-height: 200px; padding: 10px 12px;
+  border-radius: 8px; background: #0f1117; border: 1px solid #2a2d3a;
+  color: #ddd; font-family: ui-monospace, monospace; font-size: 11px;
+  line-height: 1.4; resize: vertical;
+}
+.adm-textarea:focus { outline: none; border-color: #5060a8; }
+.adm-form-row { display: flex; gap: 10px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
+.adm-msg { font-size: 12px; }
+.adm-msg.ok { color: #4ade80; }
+.adm-msg.err { color: #f87171; }
+
+.adm-runs { display: flex; flex-direction: column; gap: 10px; }
+.adm-run-row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 12px;
+  align-items: center; padding: 12px 14px;
+  background: #0f1117; border-radius: 8px; border: 1px solid #20242f;
+}
+.adm-run-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.adm-run-name { font-size: 13px; color: #ddd; font-weight: 600; }
+.adm-run-desc { font-size: 11px; color: #777; }
+.adm-run-status { font-size: 11px; color: #777; font-variant-numeric: tabular-nums; min-width: 70px; text-align: right; }
+.adm-run-status.running { color: #fbbf24; }
+.adm-run-status.done { color: #4ade80; }
+.adm-run-status.failed { color: #f87171; }
+
+.adm-log {
+  margin-top: 10px; padding: 10px 12px; max-height: 220px; overflow-y: auto;
+  background: #07090d; border-radius: 6px;
+  font-family: ui-monospace, monospace; font-size: 11px;
+  color: #aaa; white-space: pre-wrap; line-height: 1.45;
+  border: 1px solid #1a1d27;
+}
+.adm-log.hidden { display: none; }
+
+.adm-spin {
+  display: inline-block; width: 12px; height: 12px;
+  border: 2px solid #3a3d4a; border-top-color: #fbbf24;
+  border-radius: 50%; animation: adm-spin 0.7s linear infinite;
+  vertical-align: -2px; margin-right: 6px;
+}
+@keyframes adm-spin { to { transform: rotate(360deg); } }
+</style>
+
+<h1>Admin</h1>
+<p class="subtitle">Token health and on-demand data refresh.</p>
+
+<!-- ── Token status ── -->
+<div class="adm-section">
+  <h2>Robinhood token</h2>
+  <div class="adm-status" id="adm-status">
+    <div class="adm-light gray"></div>
+    <div class="adm-status-text">
+      <div class="adm-status-headline">Loading…</div>
+      <div class="adm-status-detail">&nbsp;</div>
+    </div>
+    <button class="adm-btn" id="adm-probe-btn" style="margin-left:auto" disabled>Probe RH</button>
+  </div>
+  <div class="adm-token-meta" id="adm-token-meta"></div>
+</div>
+
+<!-- ── Update token ── -->
+<div class="adm-section">
+  <h2>Update token</h2>
+  <p class="subtitle" style="margin-bottom:10px;font-size:12px">
+    Paste a fresh <code>Authorization</code> header, raw JWT, or a full cURL command from DevTools.
+    Verified against RH before saving.
+  </p>
+  <textarea class="adm-textarea" id="adm-token-input"
+    placeholder="Bearer eyJhbGciOi… &#10;or paste the whole curl command"></textarea>
+  <div class="adm-form-row">
+    <button class="adm-btn primary" id="adm-token-save">Save & validate</button>
+    <span class="adm-msg" id="adm-token-msg"></span>
+  </div>
+</div>
+
+<!-- ── Run scripts ── -->
+<div class="adm-section">
+  <h2>On-demand fetch</h2>
+  <p class="subtitle" style="margin-bottom:14px;font-size:12px">
+    Cron runs both at 4:05 PM ET on weekdays — these buttons are for "I traded today" or retry-after-failure.
+    Only one job at a time.
+  </p>
+  <div class="adm-runs" id="adm-runs">
+    <div class="adm-run-row" data-script="cash_flow">
+      <div class="adm-run-meta">
+        <span class="adm-run-name">cash_flow.py</span>
+        <span class="adm-run-desc">Refresh transfers, fees, dividends, current equity → cash_flow.jsonl</span>
+      </div>
+      <span class="adm-run-status">idle</span>
+      <button class="adm-btn">Run</button>
+    </div>
+    <div class="adm-run-row" data-script="hood">
+      <div class="adm-run-meta">
+        <span class="adm-run-name">hood.py</span>
+        <span class="adm-run-desc">Pull options trades since last fetch → spy_trades.csv (~30–90s)</span>
+      </div>
+      <span class="adm-run-status">idle</span>
+      <button class="adm-btn">Run</button>
+    </div>
+    <div class="adm-run-row" data-script="backfill">
+      <div class="adm-run-meta">
+        <span class="adm-run-name">cash_flow.py --backfill</span>
+        <span class="adm-run-desc">Rebuild full historical chart from RH's portfolio performance endpoint</span>
+      </div>
+      <span class="adm-run-status">idle</span>
+      <button class="adm-btn">Run</button>
+    </div>
+  </div>
+  <div class="adm-log hidden" id="adm-log"></div>
+</div>
+
+<script>
+(function () {
+  const el = (s) => document.querySelector(s);
+  const statusEl = el('#adm-status');
+  const tokenMetaEl = el('#adm-token-meta');
+  const probeBtn = el('#adm-probe-btn');
+  const tokenInput = el('#adm-token-input');
+  const tokenSave = el('#adm-token-save');
+  const tokenMsg = el('#adm-token-msg');
+  const logEl = el('#adm-log');
+  const runs = el('#adm-runs');
+
+  function fmtCountdown(secs) {
+    if (secs == null) return '';
+    if (secs <= 0) return 'expired';
+    const d = Math.floor(secs / 86400);
+    const h = Math.floor((secs % 86400) / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${secs % 60}s`;
+    return `${secs}s`;
+  }
+
+  let countdownTimer = null;
+  let lastStatus = null;
+
+  function paintStatus(s) {
+    lastStatus = s;
+    const light = statusEl.querySelector('.adm-light');
+    const headline = statusEl.querySelector('.adm-status-headline');
+    const detail = statusEl.querySelector('.adm-status-detail');
+    light.className = 'adm-light';
+    if (!s.masked) {
+      light.classList.add('red');
+      headline.textContent = 'No token saved';
+      detail.textContent = '.rh_token is missing — paste one below';
+      probeBtn.disabled = true;
+      tokenMetaEl.textContent = '';
+      return;
+    }
+    const secs = s.expires_in_seconds;
+    if (s.probed && s.probe_ok === false) {
+      light.classList.add('red');
+      headline.textContent = 'Rejected by RH';
+      detail.textContent = `Probe HTTP ${s.probe_status || '?'} — paste a fresh token`;
+    } else if (!s.valid || (secs !== null && secs <= 0)) {
+      light.classList.add('red');
+      headline.textContent = 'Expired';
+      detail.textContent = secs != null ? `JWT expired ${fmtCountdown(-secs)} ago` : 'JWT exp claim missing';
+    } else if (secs !== null && secs < 6 * 3600) {
+      light.classList.add('amber');
+      headline.textContent = 'Expires soon';
+      detail.textContent = `In ${fmtCountdown(secs)}`;
+    } else {
+      light.classList.add('green');
+      headline.textContent = s.probed && s.probe_ok ? 'Active (verified)' : 'Active';
+      detail.textContent = secs != null ? `Expires in ${fmtCountdown(secs)}` : 'No expiry data';
+    }
+    probeBtn.disabled = false;
+    tokenMetaEl.textContent = `${s.masked} · exp ${s.exp || '?'}`;
+
+    // Countdown ticker
+    if (countdownTimer) clearInterval(countdownTimer);
+    if (lastStatus.expires_in_seconds != null) {
+      countdownTimer = setInterval(() => {
+        lastStatus.expires_in_seconds -= 1;
+        paintStatus(lastStatus);
+      }, 1000);
+    }
+  }
+
+  async function refreshStatus(probe = false) {
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    try {
+      const s = await apiFetch('/api/admin/token-status' + (probe ? '?probe=true' : ''));
+      paintStatus(s);
+    } catch (e) {
+      const light = statusEl.querySelector('.adm-light');
+      light.className = 'adm-light red';
+      statusEl.querySelector('.adm-status-headline').textContent = 'Failed to load';
+      statusEl.querySelector('.adm-status-detail').textContent = e.message;
+    }
+  }
+
+  probeBtn.addEventListener('click', async () => {
+    probeBtn.disabled = true;
+    probeBtn.textContent = 'Probing…';
+    await refreshStatus(true);
+    probeBtn.textContent = 'Probe RH';
+  });
+
+  tokenSave.addEventListener('click', async () => {
+    const blob = tokenInput.value.trim();
+    if (!blob) { tokenMsg.textContent = 'Paste a token first'; tokenMsg.className = 'adm-msg err'; return; }
+    tokenSave.disabled = true;
+    tokenSave.textContent = 'Saving…';
+    tokenMsg.textContent = '';
+    try {
+      const r = await fetch('/api/admin/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {}),
+        },
+        body: JSON.stringify({ token: blob }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        tokenMsg.textContent = '✗ ' + (data.detail || `HTTP ${r.status}`);
+        tokenMsg.className = 'adm-msg err';
+      } else {
+        tokenMsg.textContent = '✓ Saved & verified';
+        tokenMsg.className = 'adm-msg ok';
+        tokenInput.value = '';
+        paintStatus(data);
+      }
+    } catch (e) {
+      tokenMsg.textContent = '✗ ' + e.message;
+      tokenMsg.className = 'adm-msg err';
+    } finally {
+      tokenSave.disabled = false;
+      tokenSave.textContent = 'Save & validate';
+    }
+  });
+
+  // ── Run buttons ──
+  let activeJob = null;
+  let pollTimer = null;
+
+  function setRowState(script, label, klass) {
+    const row = runs.querySelector(`[data-script="${script}"]`);
+    if (!row) return;
+    const status = row.querySelector('.adm-run-status');
+    status.textContent = label;
+    status.className = 'adm-run-status ' + (klass || '');
+    const btn = row.querySelector('button');
+    btn.disabled = klass === 'running';
+  }
+
+  function lockOthers(script) {
+    runs.querySelectorAll('.adm-run-row').forEach(row => {
+      if (row.dataset.script !== script) {
+        row.querySelector('button').disabled = true;
+      }
+    });
+  }
+
+  function unlockAll() {
+    runs.querySelectorAll('.adm-run-row button').forEach(b => b.disabled = false);
+  }
+
+  async function pollJob(jobId, script) {
+    try {
+      const j = await apiFetch('/api/admin/run/' + jobId);
+      logEl.textContent = j.log_tail || '(no output yet)';
+      logEl.scrollTop = logEl.scrollHeight;
+      if (j.state === 'running') {
+        setRowState(script, '⟳ running', 'running');
+        return; // keep polling
+      }
+      const ok = j.state === 'done';
+      setRowState(script, ok ? `✓ done (${j.exit_code})` : `✗ failed (${j.exit_code})`, ok ? 'done' : 'failed');
+      clearInterval(pollTimer); pollTimer = null;
+      activeJob = null;
+      unlockAll();
+      // Refresh token status — token may have been refreshed during the run
+      refreshStatus(false);
+    } catch (e) {
+      logEl.textContent = 'Polling error: ' + e.message;
+      clearInterval(pollTimer); pollTimer = null;
+    }
+  }
+
+  runs.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button');
+    if (!btn) return;
+    const row = btn.closest('.adm-run-row');
+    if (!row) return;
+    const script = row.dataset.script;
+    if (activeJob) return;
+    btn.disabled = true;
+    setRowState(script, '⟳ starting…', 'running');
+    logEl.classList.remove('hidden');
+    logEl.textContent = '';
+    try {
+      const r = await fetch('/api/admin/run', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {}),
+        },
+        body: JSON.stringify({ script }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        setRowState(script, '✗ ' + (data.detail || `HTTP ${r.status}`), 'failed');
+        unlockAll();
+        return;
+      }
+      activeJob = data.id;
+      lockOthers(script);
+      setRowState(script, '⟳ running', 'running');
+      pollTimer = setInterval(() => pollJob(data.id, script), 2000);
+      pollJob(data.id, script);
+    } catch (e) {
+      setRowState(script, '✗ ' + e.message, 'failed');
+      unlockAll();
+    }
+  });
+
+  refreshStatus(false);
+})();
+</script>
