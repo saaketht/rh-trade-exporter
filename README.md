@@ -1,12 +1,23 @@
 # RH Options Trade Exporter
 
-Export your Robinhood options trade history to structured CSVs with execution timestamps to the second, automatic open/close pairing, underlying asset OHLC, and VIX data. Designed for day traders (like me!) who maintain trading journals and need granular data that Robinhood's UI and PDF confirmations don't provide.
+Export your Robinhood options trade history to structured CSVs with execution timestamps to the second, automatic open/close pairing, underlying asset OHLC, and VIX data. Optionally merge those exports into an Excel trading journal, pull a full account-level cash flow / portfolio history, and visualize everything in a self-hosted FastAPI dashboard. Designed for active traders who maintain trading journals and need granular data that Robinhood's UI and PDF confirmations don't provide.
 
 ## Why This Exists
 
 Robinhood has no aggregated trade export. You can download individual trade confirmations (one PDF per trading day, no CSV option), but there's no way to get a consolidated history across multiple days. The PDFs also omit execution times beyond the minute, which matters for scalps and 0DTE options.
 
-This script talks directly to Robinhood's API using a session token from your browser — no third-party auth libraries, no stored credentials, no crazy dependencies.
+This project talks directly to Robinhood's API using a session token from your browser — no third-party auth libraries, no stored credentials, no crazy dependencies.
+
+## What's In The Box
+
+| Component | What it does |
+|---|---|
+| `hood.py` | Pulls options orders from RH, FIFO-pairs opens→closes, enriches with OHLC / VWAP / 8 EMA / VIX / delta, writes CSVs. Incremental by default. |
+| `journal_sync.py` | Appends new CSV trades into your `spy_0dte_journal.xlsx` without touching existing rows, formulas, or manual-fill columns. |
+| `cash_flow.py` | Pulls every cash movement (transfers, fees, dividends, referrals) + current equity per account, writes append-only JSONL snapshots. `--backfill` reconstructs per-day historical snapshots from RH's web chart endpoint. |
+| `server.py` | FastAPI dashboard — equity curve, KPIs, calendar heatmap, pre-trade reference, ag-Grid trade log with editable journal notes, account-level portfolio view, and an Admin tab to refresh the RH token + run any of the scripts on demand. |
+| `vps/` | Cron wrapper, systemd unit, nginx/HTTPS guide, logrotate config for unattended VPS deployment. |
+| `tests/` | pytest suites for all four scripts. CI runs on every push/PR via `.github/workflows/test.yml`. |
 
 ## Output Files
 
@@ -65,11 +76,13 @@ Each **closing execution** produces its own row. If you open 3 contracts and clo
 ### Requirements
 
 - Python 3.10+
-- Three packages (no Robinhood-specific libraries):
+- No Robinhood-specific libraries. Install everything in one shot:
 
 ```bash
-pip install requests yfinance pandas
+pip install -r requirements.txt
 ```
+
+(That's `requests`, `yfinance`, `pandas`, `openpyxl` for journal sync, `fastapi` + `uvicorn` + `httpx` for the dashboard, and `pytest` for the test suite.)
 
 ### Getting Your Auth Token
 
@@ -146,10 +159,15 @@ python hood.py --token "Bearer ..." --save-token
 
 ### Subsequent Runs (Token Saved)
 
+Bare `python hood.py` is **incremental by default** — it derives a fetch cursor from your existing CSVs (`min(max(Date) across spy_trades + other_trades, min(Date) in unmatched_opens) - 1 day`) so multi-DTE positions still get refetched. Use `--full` to refetch everything.
+
 ```bash
-python hood.py
+python hood.py                  # incremental
+python hood.py --full           # full refetch
 python hood.py --start 2026-01-01
 ```
+
+New rows are merged into existing CSVs (dedup key = Group ID + Exit Time). Sticky columns: Delta / VWAP / 8 EMA carry forward from the old row when the new one is blank, so re-runs don't erase point-in-time data after RH's intraday-bar window has rolled off.
 
 ### First Run with Multiple Accounts
 
@@ -198,9 +216,66 @@ Saves the raw API response to `rh_raw_orders.json` for inspection.
 | `--after-date` | None | Server-side filter: only orders updated after date (YYYY-MM-DD) |
 | `--symbol` | None | Server-side filter: only this underlying (e.g. `SPY`) |
 | `--filled-only` | Auto | Server-side filter: only filled orders (auto-enabled unless `--dump-raw`) |
+| `--full` | Off | Disable incremental cursor and refetch everything |
 | `--output-dir` | `./outputs/` | Directory for output CSVs |
 | `--time-format` | `excel` | `excel` (HH:MM:SS) or `ampm` (H:MM:SS AM/PM) |
 | `--dump-raw` | Off | Save raw JSON for debugging (disables server-side state filter) |
+
+## Journal Sync
+
+`journal_sync.py` appends new CSV trades into `spy_0dte_journal.xlsx` without touching existing rows, formulas, or the manual-fill columns (Setup / Trigger / Exit Reason / Rules Followed / Notes).
+
+```bash
+python journal_sync.py                    # → spy_0dte_journal_updated.xlsx (original untouched)
+python journal_sync.py --in-place         # overwrite spy_0dte_journal.xlsx directly
+python journal_sync.py --fetch            # auto-run hood.py first with --after-date <journal's max date>
+python journal_sync.py --journal <path> --csv <path> --output <path>
+```
+
+- Dedup key is `(Date, Entry Time, Strike, Type, Qty)` — format-independent across re-runs.
+- Per-row formulas (Trend Aligned, Hold Time, Entry Hour, P/L $/%, Cumulative P/L, Win/Loss, Is Win, Risk $, R-Multiple) are re-emitted from row 2 patterns with row substitution.
+- Excel table (`Table2`) range is extended so appended rows are part of the formatted table.
+- After save (unless `--in-place`), every existing row is diff'd cell-by-cell against the original. Aborts with exit code 2 on any difference.
+
+## Cash Flow & Portfolio Snapshots
+
+`cash_flow.py` pulls every dollar that has moved through your accounts and writes a snapshot to `outputs/cash_flow.jsonl` (append-only — one line per run).
+
+```bash
+python cash_flow.py                       # appends a new snapshot
+python cash_flow.py --json                # silent mode (cron-friendly), still writes JSONL
+python cash_flow.py --backfill            # one-shot: rebuild outputs/cash_flow_historical.jsonl
+                                          # from RH's web chart endpoint (overwrites)
+```
+
+Each snapshot includes: deposits / withdrawals (+ pending), net deposited, Gold fees + months, dividends, referral grants, net cash basis, current equity, all-time P/L, total return, and per-account equity + cash.
+
+Transfer classification keys off the **account-type pair** (`originating_account_type → receiving_account_type`), not RH's `direction` field — `direction` lies for inbound third-party credits (e.g. an IRS refund shows up as `direction=push, external→rhs_account`, but money flows IN). Unknown shapes log a warning and are skipped rather than silently miscounted.
+
+## Dashboard
+
+`server.py` is a FastAPI app that serves an SPA dashboard (six views: Analysis, Calendar, Pre-Trade, Trade Log, Portfolio, Admin) on top of the CSV/JSONL outputs.
+
+```bash
+# Local dev (no auth)
+uvicorn server:app --reload
+# → http://localhost:8000/dashboard
+
+# With auth — Bearer token from .server_token (chmod 600)
+echo "my-secret-token" > .server_token
+uvicorn server:app --reload
+# → http://localhost:8000/dashboard?token=my-secret-token
+```
+
+Auth accepts either `Authorization: Bearer <token>` header or `?token=<token>` query param. Missing token file = auth disabled (local dev only).
+
+**Highlights:**
+- **Analysis** — equity curve (cumulative/daily toggle), KPIs, Chart.js breakdowns. Span selector (1D / 1W / 1M / 3M / 6M / YTD / 1Y / ALL), persisted to `localStorage`.
+- **Calendar** — browsable monthly P/L heatmap + habit insights.
+- **Pre-Trade** — day-of-week / VIX / hour reference tables.
+- **Trade Log** — ag-Grid trade table with editable journal notes (saved to `outputs/journal_notes.json`, keyed by Group ID).
+- **Portfolio** — account-level equity / P/L / income view backed by `cash_flow.jsonl` (live) + `cash_flow_historical.jsonl` (synthetic backfill). Clickable KPIs open a modal with formula + breakdown. Span selector defaults to 1Y.
+- **Admin** — RH token health (traffic-light + JWT-expiry countdown), paste-to-update form (accepts raw JWT, `Bearer <jwt>`, header line, or full cURL paste — validated against RH `/user/` before persisting), and on-demand "Run" buttons for `hood.py`, `cash_flow.py`, `cash_flow.py --backfill` with a live-tailing log panel. Means you don't need to SSH in to refresh a token or kick off a fetch.
 
 ## Security
 
@@ -251,13 +326,13 @@ Delta is point-in-time. It only populates for same-day exports run before contra
 
 ## Automated / Scheduled Runs
 
-The script can run unattended via cron on a VPS using the wrapper in `vps/run.sh`, which handles logging and failure alerts (Discord webhook + optional email).
+The cron wrapper in `vps/run.sh` runs **both** `hood.py` and `cash_flow.py` end-to-end, with logging and failure alerts (Discord webhook + optional email). The dashboard runs alongside as a long-lived systemd service (`vps/rh-trade-exporter.service`) behind nginx + HTTPS — see `vps/hosting-guide.md` for the full domain + nginx walkthrough.
 
 **Setup on VPS:**
 
 ```bash
 # Clone and install
-git clone git@github.com:saaketh/rh-trade-exporter.git
+git clone git@github.com:saaketht/rh-trade-exporter.git
 cd rh-trade-exporter
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
@@ -267,6 +342,10 @@ python3 -m venv .venv
 
 # Set up log rotation
 sudo cp vps/logrotate.conf /etc/logrotate.d/rh-trade-exporter
+
+# Install + start the dashboard service
+sudo cp vps/rh-trade-exporter.service /etc/systemd/system/
+sudo systemctl enable --now rh-trade-exporter
 
 # Add to crontab (crontab -e)
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR/WEBHOOK
@@ -278,8 +357,17 @@ This runs at 4:05 PM ET every weekday (5 min after market close). On failure, it
 **Requirements:**
 1. `.rh_token` and `.rh_accounts.json` present in the project directory
 2. A Python venv with dependencies installed
-3. A valid auth token (currently manual refresh — lasts ~2 weeks in practice)
+3. A valid auth token (refresh manually from the dashboard's Admin tab — currently lasts ~2 weeks in practice)
 4. VPS timezone set to `America/New_York` (or adjust cron hours for UTC)
+5. (Optional, for the dashboard) `.server_token` set to a strong random string
+
+## Tests
+
+```bash
+pytest tests/ -v
+```
+
+Covers `hood.py` (token resolution, FIFO pairing, VWAP/EMA classification, formatting, DataFrame building, incremental cursor, sticky-column merge), `journal_sync.py` (dedup key, formula re-emission, stale-DV strip, append smoke test), `cash_flow.py` (pagination, transfer categorization, summary math, JSONL output), and `server.py` (auth, all API endpoints, CSV parsing, route handlers). CI runs on push/PR to `main` via GitHub Actions.
 
 ## License
 

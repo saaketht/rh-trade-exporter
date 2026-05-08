@@ -1,5 +1,73 @@
+<style>
+.day-cell.has-trades { cursor: pointer; }
+.cal-modal-bg {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: none; align-items: center; justify-content: center; z-index: 1000;
+}
+.cal-modal-bg.open { display: flex; }
+.cal-modal {
+  background: #1a1d27; border-radius: 12px; padding: 24px 28px;
+  max-width: 720px; width: 92%; max-height: 85vh; overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5); border: 1px solid #2a2d3a;
+  position: relative;
+}
+.cal-modal h2 { font-size: 18px; margin: 0 0 4px; color: #fff; }
+.cal-modal .cal-sub { font-size: 12px; color: #888; margin-bottom: 16px; }
+.cal-modal .cal-stat-row {
+  display: flex; gap: 22px; flex-wrap: wrap;
+  padding: 10px 0 16px; border-bottom: 1px solid #2a2d3a; margin-bottom: 16px;
+  font-size: 13px;
+}
+.cal-modal .cal-stat-row .lbl { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; display: block; margin-bottom: 2px; }
+.cal-modal .cal-stat-row .val { color: #fff; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cal-modal h3 { font-size: 13px; color: #aaa; text-transform: uppercase; letter-spacing: 0.8px; margin: 18px 0 10px; font-weight: 600; }
+.cal-modal .rt-row {
+  display: grid;
+  grid-template-columns: 110px 130px 1fr 90px 70px;
+  gap: 12px; align-items: center;
+  padding: 9px 10px; border-radius: 6px;
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+}
+.cal-modal .rt-row + .rt-row { margin-top: 2px; }
+.cal-modal .rt-row:hover { background: #20242f; }
+.cal-modal .rt-time { color: #ccc; }
+.cal-modal .rt-contract { color: #fff; font-weight: 500; }
+.cal-modal .rt-prices { color: #999; }
+.cal-modal .rt-pl { text-align: right; font-weight: 600; }
+.cal-modal .rt-wl { text-align: right; font-size: 10px; letter-spacing: 0.6px; }
+.cal-modal .rt-wl.WIN { color: #4ade80; }
+.cal-modal .rt-wl.LOSS { color: #f87171; }
+.cal-modal .rt-wl.BE { color: #888; }
+.cal-modal .rt-group-divider {
+  height: 1px; background: #2a2d3a; margin: 6px 0;
+}
+.cal-modal .cal-close {
+  position: absolute; top: 12px; right: 16px; cursor: pointer;
+  font-size: 22px; color: #666; background: none; border: none;
+}
+.cal-modal .cal-close:hover { color: #ccc; }
+.cal-modal .empty-note { color: #666; font-size: 12px; padding: 8px 0; }
+.cal-modal .wr-badge {
+  display: inline-block; margin-left: 8px;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px; vertical-align: middle;
+}
+.cal-modal .wr-badge.wr-good { background: rgba(74,222,128,0.18); color: #4ade80; }
+.cal-modal .wr-badge.wr-mid  { background: rgba(250,204,21,0.18); color: #facc15; }
+.cal-modal .wr-badge.wr-bad  { background: rgba(248,113,113,0.18); color: #f87171; }
+.cal-modal .rt-fills-tag {
+  font-size: 9px; color: #666; margin-left: 6px;
+  letter-spacing: 0.4px; text-transform: uppercase;
+}
+</style>
+
 <h1>Trading Calendar & Habit Analysis</h1>
 <p class="sub" id="cal-sub">Loading...</p>
+
+<div class="cal-modal-bg" id="cal-modal-bg">
+  <div class="cal-modal" id="cal-modal"></div>
+</div>
 
 <div class="section">
   <h2>Is It All From One Day?</h2>
@@ -139,7 +207,7 @@
         html += `<div class="day-cell no-trade"><div class="date">${d}</div></div>`;
       } else {
         const plColor = data.pl >= 0 ? 'g' : 'r';
-        html += `<div class="day-cell ${getClass(data.pl)}">
+        html += `<div class="day-cell has-trades ${getClass(data.pl)}" data-date="${dateStr}">
           <div class="date">${d}</div>
           <div class="pl ${plColor}">${data.pl >= 0 ? '+' : ''}${data.pl}</div>
           <div class="trades">${data.num_trades}t ${data.wins}w</div>
@@ -168,6 +236,130 @@
       currentMonthIdx = parseInt(e.target.value);
       renderMonth();
     });
+
+    // Day click → open detail modal
+    cal.querySelectorAll('.day-cell.has-trades').forEach(el => {
+      el.addEventListener('click', () => openDayModal(el.dataset.date));
+    });
+  }
+
+  // --- Day-detail modal ---
+  const modalBg = document.getElementById('cal-modal-bg');
+  const modalEl = document.getElementById('cal-modal');
+
+  function closeModal() { modalBg.classList.remove('open'); }
+  modalBg.addEventListener('click', (e) => { if (e.target === modalBg) closeModal(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+  const fmtTime = (t) => {
+    if (!t) return '—';
+    const m = String(t).match(/(\d{1,2}):(\d{2})/);
+    return m ? `${m[1].padStart(2,'0')}:${m[2]}` : t;
+  };
+  const fmtPL = (v) => v == null ? '—' : (v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString());
+  const fmtPrice = (n) => n == null ? '—' : '$' + n.toFixed(2);
+
+  function openDayModal(dateStr) {
+    const dayData = lookup[dateStr];
+    const dayTrades = allTrades.filter(t => t.date === dateStr)
+      .sort((a, b) => (a.entry_time || '').localeCompare(b.entry_time || '')
+                     || (a.exit_time || '').localeCompare(b.exit_time || ''));
+
+    const dt = new Date(dateStr + 'T12:00:00');
+    const dowName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][dt.getDay()];
+
+    const plClass = dayData && dayData.pl >= 0 ? 'g' : 'r';
+    const totalQty = dayTrades.reduce((s, t) => s + (t.qty || 0), 0);
+
+    // Win rate (excluding break-even)
+    const wins = dayTrades.filter(t => t.wl === 'WIN').length;
+    const losses = dayTrades.filter(t => t.wl === 'LOSS').length;
+    const decided = wins + losses;
+    const wrPct = decided ? Math.round(wins / decided * 100) : null;
+    const wrCls = wrPct == null ? '' : wrPct >= 60 ? 'wr-good' : wrPct >= 45 ? 'wr-mid' : 'wr-bad';
+    const wrBadge = wrPct == null ? '' : `<span class="wr-badge ${wrCls}">${wrPct}%</span>`;
+
+    let groupedHTML = '';
+    if (!dayTrades.length) {
+      groupedHTML = '<div class="empty-note">No trades on this day.</div>';
+    } else {
+      // Step 1: collapse identical fills within a group_id
+      // (same entry/exit time + same prices → one display row, qty/pl summed)
+      const groupKey = (t) => t.group_id || `${t.entry_time}-${t.strike}-${t.type}`;
+      const fillKey = (t) => {
+        const entryPx = t.entry_cost && t.qty ? (Math.abs(t.entry_cost) / (t.qty * 100)).toFixed(2) : 'na';
+        const exitPx = t.exit_credit && t.qty ? (t.exit_credit / (t.qty * 100)).toFixed(2) : 'na';
+        return `${groupKey(t)}|${t.entry_time}|${t.exit_time}|${entryPx}|${exitPx}`;
+      };
+      const collapsed = new Map();
+      const order = [];
+      dayTrades.forEach(t => {
+        const k = fillKey(t);
+        if (!collapsed.has(k)) {
+          order.push(k);
+          collapsed.set(k, {
+            ...t,
+            qty: t.qty || 0,
+            pl: t.pl || 0,
+            entry_cost: t.entry_cost || 0,
+            exit_credit: t.exit_credit || 0,
+            _fills: 1,
+          });
+        } else {
+          const c = collapsed.get(k);
+          c.qty += (t.qty || 0);
+          c.pl += (t.pl || 0);
+          c.entry_cost += (t.entry_cost || 0);
+          c.exit_credit += (t.exit_credit || 0);
+          c._fills += 1;
+        }
+      });
+
+      // Step 2: cluster by group_id, render with dividers between groups
+      const groupOrder = [];
+      const seenGroups = new Set();
+      order.forEach(k => {
+        const t = collapsed.get(k);
+        const g = groupKey(t);
+        if (!seenGroups.has(g)) { seenGroups.add(g); groupOrder.push(g); }
+      });
+
+      groupedHTML = groupOrder.map(gid => {
+        const rows = order.map(k => collapsed.get(k)).filter(t => groupKey(t) === gid);
+        return rows.map(t => {
+          const ePx = t.entry_cost && t.qty ? Math.abs(t.entry_cost) / (t.qty * 100) : null;
+          const xPx = t.exit_credit && t.qty ? t.exit_credit / (t.qty * 100) : null;
+          const hold = t.hold_time_min != null ? Math.round(t.hold_time_min) + 'm' : '';
+          const plCls = (t.pl || 0) >= 0 ? 'g' : 'r';
+          const wl = t.wl || '';
+          const typeAbbr = t.type === 'Call' ? 'C' : t.type === 'Put' ? 'P' : '?';
+          const fillTag = t._fills > 1 ? `<span class="rt-fills-tag">${t._fills} fills</span>` : '';
+          return `<div class="rt-row">
+            <span class="rt-time">${fmtTime(t.entry_time)} → ${fmtTime(t.exit_time)}${hold ? ' <span style="color:#666">('+hold+')</span>' : ''}</span>
+            <span class="rt-contract">SPY ${t.strike}${typeAbbr} ×${t.qty || '?'}${fillTag}</span>
+            <span class="rt-prices">${fmtPrice(ePx)} → ${fmtPrice(xPx)}</span>
+            <span class="rt-pl ${plCls}">${fmtPL(t.pl)}</span>
+            <span class="rt-wl ${wl}">${wl}</span>
+          </div>`;
+        }).join('') + '<div class="rt-group-divider"></div>';
+      }).join('').replace(/<div class="rt-group-divider"><\/div>$/, '');
+    }
+
+    modalEl.innerHTML = `
+      <button class="cal-close" aria-label="Close">×</button>
+      <h2>${dateStr} — ${dowName}</h2>
+      <div class="cal-sub">${dayData ? dayData.num_trades + ' trades · ' + totalQty + ' contracts' : 'No data'}</div>
+      <div class="cal-stat-row">
+        <div><span class="lbl">Day P/L</span><span class="val ${plClass}">${dayData ? fmtPL(dayData.pl) : '—'}</span></div>
+        <div><span class="lbl">Wins</span><span class="val">${dayData ? dayData.wins + '/' + dayData.num_trades : '—'}${wrBadge}</span></div>
+        <div><span class="lbl">Cumulative</span><span class="val">${dayData ? fmtPL(dayData.cumulative_pl) : '—'}</span></div>
+        <div><span class="lbl">VIX</span><span class="val">${dayData && dayData.vix != null ? dayData.vix : '—'}</span></div>
+      </div>
+      <h3>Round trips</h3>
+      ${groupedHTML}
+    `;
+    modalEl.querySelector('.cal-close').addEventListener('click', closeModal);
+    modalBg.classList.add('open');
   }
 
   renderMonth();
