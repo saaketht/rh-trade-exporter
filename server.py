@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -32,9 +32,12 @@ NOTES_FILE = OUTPUTS_DIR / "journal_notes.json"
 
 # Admin job whitelist — never accept arbitrary commands.
 ADMIN_SCRIPTS = {
-    "hood":      [sys.executable, str(BASE_DIR / "hood.py")],
-    "cash_flow": [sys.executable, str(BASE_DIR / "cash_flow.py")],
-    "backfill":  [sys.executable, str(BASE_DIR / "cash_flow.py"), "--backfill"],
+    "hood":              [sys.executable, str(BASE_DIR / "hood.py")],
+    "cash_flow":         [sys.executable, str(BASE_DIR / "cash_flow.py")],
+    "backfill":          [sys.executable, str(BASE_DIR / "cash_flow.py"), "--backfill"],
+    "spy_daily":         [sys.executable, str(BASE_DIR / "spy_daily.py")],
+    "spy_intraday":      [sys.executable, str(BASE_DIR / "spy_intraday.py")],
+    "spy_intraday_back": [sys.executable, str(BASE_DIR / "spy_intraday.py"), "--backfill"],
 }
 
 # In-memory job table. Single-worker uvicorn assumed.
@@ -96,13 +99,19 @@ COLUMN_MAP = {
     "Delta": "delta",
     "Group ID": "group_id",
     "DTE": "dte",
+    # unmatched_opens.csv-only columns
+    "Expiry": "expiry",
+    "Side": "side",
+    "Unmatched Qty": "unmatched_qty",
+    "Entry Price/Share": "entry_price_share",
 }
 
-INT_FIELDS = {"trade_num", "qty", "entry_hour", "is_win", "dte"}
+INT_FIELDS = {"trade_num", "qty", "entry_hour", "is_win", "dte", "unmatched_qty"}
 FLOAT_FIELDS = {
     "strike", "open", "high", "low", "close", "vwap", "ema8",
     "hold_time_min", "entry_cost", "risk", "exit_credit",
     "pl", "cumulative_pl", "pl_pct", "vix", "delta",
+    "entry_price_share",
 }
 
 def _normalize_date(d: str) -> str:
@@ -130,6 +139,25 @@ def _convert(key: str, val: str):
             return val
     return val
 
+def _compute_exit_date(entry_date: Optional[str], entry_time: Optional[str], hold_min) -> Optional[str]:
+    """Derive YYYY-MM-DD exit date from entry datetime + hold (in wall-clock minutes).
+
+    For 0DTE same-day trades, returns the entry date. For 1DTE+ trades held overnight,
+    returns the actual close date. Used for close-date P/L attribution (Option II accounting).
+    """
+    if not entry_date or not entry_time or hold_min is None:
+        return entry_date
+    try:
+        # entry_time may be HH:MM:SS or HH:MM
+        t = str(entry_time)
+        if t.count(":") == 1:
+            t += ":00"
+        entry_dt = datetime.fromisoformat(f"{entry_date}T{t}")
+        exit_dt = entry_dt + timedelta(minutes=float(hold_min))
+        return exit_dt.date().isoformat()
+    except Exception:
+        return entry_date
+
 def _read_csv(filename: str) -> list[dict]:
     path = OUTPUTS_DIR / filename
     if not path.exists():
@@ -147,6 +175,9 @@ def _read_csv(filename: str) -> list[dict]:
                 out["date"] = _normalize_date(out["date"])
             if "expiry_date" in out:
                 out["expiry_date"] = _normalize_date(out["expiry_date"])
+            # Derive exit_date for close-date attribution (Option II)
+            if "date" in out and "entry_time" in out and "hold_time_min" in out:
+                out["exit_date"] = _compute_exit_date(out.get("date"), out.get("entry_time"), out.get("hold_time_min"))
             rows.append(out)
         return rows
 
@@ -185,22 +216,136 @@ def get_trades(symbol: Optional[str] = None, _=Depends(verify_token)):
 
 @app.get("/api/trades/daily")
 def get_daily(_=Depends(verify_token)):
+    """Daily aggregates bucketed by EXIT date (close-date attribution).
+
+    For 0DTE this is identical to entry-date bucketing (same date). For 1DTE+ trades
+    held overnight, P/L is attributed to the day the position was closed — which matches
+    when the loss/gain is actually realized.
+    """
     trades = _read_csv("spy_trades.csv")
     daily: dict[str, dict] = {}
     for t in trades:
-        d = t["date"]
+        d = t.get("exit_date") or t["date"]
         if d not in daily:
             daily[d] = {"date": d, "pl": 0, "num_trades": 0, "wins": 0, "cumulative_pl": 0, "vix": t.get("vix")}
         daily[d]["pl"] += t["pl"] or 0
         daily[d]["num_trades"] += 1
         if t.get("is_win") == 1:
             daily[d]["wins"] += 1
-        daily[d]["cumulative_pl"] = t.get("cumulative_pl") or daily[d]["cumulative_pl"]
-    return sorted(daily.values(), key=lambda x: x["date"])
+        # Track latest VIX for the day (last-seen wins; trades closed later in the day take precedence)
+        if t.get("vix") is not None:
+            daily[d]["vix"] = t["vix"]
+    # Recompute cumulative in date order — the CSV's cumulative_pl column was computed
+    # under entry-date assumption and would be wrong here.
+    sorted_days = sorted(daily.values(), key=lambda x: x["date"])
+    cum = 0
+    for day in sorted_days:
+        cum += day["pl"]
+        day["cumulative_pl"] = round(cum, 2)
+    return sorted_days
 
 @app.get("/api/trades/open")
 def get_open(_=Depends(verify_token)):
     return _read_csv("unmatched_opens.csv")
+
+@app.get("/api/positions")
+def get_positions(_=Depends(verify_token)):
+    """Currently-open positions from unmatched_opens.csv with derived days-held + DTE remaining.
+
+    Mark prices and unrealized P/L are not yet included — those require resolving each
+    contract to an instrument URL and hitting RH /marketdata/options/, which is a follow-up.
+    """
+    today = datetime.now().date()
+    rows = _read_csv("unmatched_opens.csv")
+    positions = []
+    for r in rows:
+        entry_date = _normalize_date(r.get("date") or "")
+        expiry = _normalize_date(r.get("expiry") or r.get("expiry_date") or "")
+        try:
+            ed = datetime.fromisoformat(entry_date).date() if entry_date else None
+            xp = datetime.fromisoformat(expiry).date() if expiry else None
+        except Exception:
+            ed, xp = None, None
+        days_held = (today - ed).days if ed else None
+        dte_remaining = (xp - today).days if xp else None
+        positions.append({
+            "date": entry_date,
+            "account": r.get("account"),
+            "symbol": r.get("symbol"),
+            "type": r.get("type"),
+            "strike": r.get("strike"),
+            "expiry": expiry,
+            "side": r.get("side"),
+            "qty": r.get("unmatched_qty"),
+            "entry_price": r.get("entry_price_share"),
+            "entry_time": r.get("entry_time"),
+            "group_id": r.get("group_id"),
+            "days_held": days_held,
+            "dte_remaining": dte_remaining,
+            "expired": dte_remaining is not None and dte_remaining < 0,
+            # Stable key for cross-view linking from the calendar modal.
+            # Format strike with `:g` so 510.0 → "510" — matches how JS template literals
+            # render the same numeric value, keeping the keys identical on both sides.
+            "contract_key": (lambda s: f"{r.get('symbol','')}-"
+                                       f"{(format(s, 'g') if isinstance(s, (int, float)) else s) if s != '' and s is not None else ''}-"
+                                       f"{r.get('type','')}-{expiry}")(r.get('strike')),
+        })
+    # Sort: nearest expiry first, then by entry date
+    positions.sort(key=lambda p: ((p["dte_remaining"] if p["dte_remaining"] is not None else 99999),
+                                   p["date"] or ""))
+    return positions
+
+@app.get("/api/spy/intraday/{date}")
+def get_spy_intraday(date: str, _=Depends(verify_token)):
+    """5-minute SPY bars for one date, from outputs/spy_intraday/{date}.json.
+
+    Returns the cached payload as-is. Three success-shapes the caller must handle:
+      - `{date, bars: [...], source, interval, fetched_at}` — bars present
+      - `{date, available: false, reason: "out_of_plan" | "no_data" | "error", message?}`
+      - `{date, available: false, reason: "not_cached"}` — file doesn't exist yet
+    """
+    # Validate the date format to avoid path traversal via the {date} param.
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    path = OUTPUTS_DIR / "spy_intraday" / f"{date}.json"
+    if not path.exists():
+        return {"date": date, "available": False, "reason": "not_cached", "bars": []}
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {"date": date, "available": False, "reason": "corrupt", "bars": []}
+
+@app.get("/api/spy/daily")
+def get_spy_daily(_=Depends(verify_token)):
+    """Per-day SPY + VIX cache for the Calendar overlay.
+
+    Returns the contents of outputs/spy_daily.json as written by spy_daily.py.
+    Used by the calendar to show market context (SPY % change, VIX level) on
+    every cell — including days the user didn't trade. Empty {days:[]} if the
+    cache hasn't been built yet.
+    """
+    path = OUTPUTS_DIR / "spy_daily.json"
+    if not path.exists():
+        return {"days": [], "range": {"start": None, "end": None}, "generated_at": None}
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {"days": [], "range": {"start": None, "end": None}, "generated_at": None}
+
+@app.get("/api/cash-flow/events")
+def get_cash_flow_events(date: Optional[str] = Query(None), _=Depends(verify_token)):
+    """Per-transfer event log: deposits / withdrawals / internals / gold fees / dividends / referrals.
+
+    Powers the calendar's day-cell flow indicators and the modal's Cash flow section.
+    Source: outputs/cash_flow_events.jsonl (idempotent, written by every cash_flow.py run).
+    Optional ?date=YYYY-MM-DD filters to a single day.
+    """
+    events = _read_jsonl("cash_flow_events.jsonl")
+    if date:
+        events = [e for e in events if e.get("date") == date]
+    return sorted(events, key=lambda e: (e.get("date") or "", e.get("kind") or ""))
 
 @app.get("/api/cash-flow")
 def get_cash_flow(_=Depends(verify_token)):
@@ -416,8 +561,13 @@ def _spawn_job(script: str) -> str:
     job_id = uuid.uuid4().hex[:12]
     log_path = JOBS_DIR / f"{job_id}.log"
     log_file = open(log_path, "w")
+    # Force unbuffered stdout in the child so the admin log file shows progress
+    # in real time. Without this, Python block-buffers stdout (4KB+) when
+    # redirected to a file, so users see nothing until the script finishes.
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
     proc = subprocess.Popen(
-        cmd, cwd=str(BASE_DIR),
+        cmd, cwd=str(BASE_DIR), env=env,
         stdout=log_file, stderr=subprocess.STDOUT,
         bufsize=1, text=True,
     )
