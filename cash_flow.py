@@ -15,9 +15,15 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TOKEN_FILE = SCRIPT_DIR / ".rh_token"
+SYMBOLS_CACHE_FILE = SCRIPT_DIR / ".rh_resolved_symbols.json"
 
 API_BASE = "https://api.robinhood.com"
 BONFIRE_BASE = "https://bonfire.robinhood.com"
+
+# Dividend states that count toward cost-basis math. Pending dividends are
+# entitlements RH has scheduled but not yet paid — keep them in the events log
+# so the UI surfaces them, but exclude from totals until they actually settle.
+PAID_DIVIDEND_STATES = {"paid", "reinvested"}
 
 
 def load_token() -> str:
@@ -32,6 +38,49 @@ def load_token() -> str:
 
 def headers(token: str) -> dict:
     return {"Authorization": token, "Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+
+
+def load_resolved_symbols() -> dict:
+    """Read URL→symbol cache for dividend instrument lookups."""
+    if SYMBOLS_CACHE_FILE.exists():
+        try:
+            return json.loads(SYMBOLS_CACHE_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def save_resolved_symbols(cache: dict) -> None:
+    try:
+        SYMBOLS_CACHE_FILE.write_text(json.dumps(cache, indent=2, sort_keys=True))
+    except OSError:
+        pass
+
+
+def fetch_instrument_symbol(url: str, hdrs: dict) -> str | None:
+    """One-shot resolve of an RH instrument URL → ticker symbol. None on failure."""
+    try:
+        r = requests.get(url, headers=hdrs, timeout=15)
+        if r.status_code != 200:
+            return None
+        return r.json().get("symbol")
+    except (requests.RequestException, ValueError):
+        return None
+
+
+def resolve_dividend_symbols(divs: list, hdrs: dict, log=print) -> None:
+    """Mutates each dividend dict to attach `_symbol` (ticker) via cached lookup.
+    Misses fall back to empty string; downstream uses instrument UUID as the fallback."""
+    cache = load_resolved_symbols()
+    unique_urls = {d.get("instrument") for d in divs if d.get("instrument")}
+    missing = [u for u in unique_urls if u not in cache]
+    if missing:
+        log(f"  🔍 resolving {len(missing)} new dividend instrument{'s' if len(missing) > 1 else ''}…")
+        for url in missing:
+            cache[url] = fetch_instrument_symbol(url, hdrs) or ""
+        save_resolved_symbols(cache)
+    for d in divs:
+        d["_symbol"] = cache.get(d.get("instrument", ""), "") or ""
 
 
 def paginate(url: str, hdrs: dict) -> list:
@@ -220,6 +269,232 @@ def collect_dated_cashflows(transfers: list, fees: list, divs: list, refs: list)
     }
 
 
+def extract_events(transfers: list, fees: list, divs: list, refs: list) -> list:
+    """Emit per-event records for every cashflow line item — transfers, gold fees,
+    dividends, and referral grants. Used to power the calendar's day-by-day cashflow
+    visualization. Each event has a stable id so re-runs are idempotent.
+
+    Event schema:
+        {
+          id:             "<kind>:<source_id>",   # stable; safe to dedup on
+          kind:           "deposit" | "withdrawal" | "internal"
+                          | "gold_fee" | "dividend" | "referral",
+          date:           "YYYY-MM-DD",
+          amount:         float (always positive; `kind` carries the sign semantics),
+          state:          "completed" | "pending" | "submitted" | "failed" | "voided",
+          # transfer-only:
+          transfer_type:  e.g. "ach", "non_originated_ach", "internal"
+          direction:      raw RH field ("pull" | "push"), kept for forensics
+          orig_acct_type: e.g. "external_bank_account", "rhs_account"
+          recv_acct_type: ditto
+          originator:     details.originator_name when present (e.g. "IRS REFUND")
+          note:           details.description fallback
+          # dividend-only:
+          symbol:         underlying that paid
+          # referral-only:
+          asset:          stock symbol or "CASH"
+        }
+
+    Note: transfers in non-completed states are emitted too (with their `state`),
+    so the UI can show pending ACH transfers as in-flight. Failed/voided are emitted
+    so they can be greyed out — they're real history even if they don't count.
+    """
+    out: list[dict] = []
+
+    for t in transfers:
+        try:
+            amt = float(t.get("amount", 0))
+        except (TypeError, ValueError):
+            continue
+        if amt == 0:
+            continue
+        date = (t.get("created_at") or "")[:10]
+        if not date:
+            continue
+        tid = t.get("id") or ""
+        state = t.get("state", "?")
+        direction = t.get("direction", "?")
+        transfer_type = t.get("transfer_type", "")
+        orig = t.get("originating_account_type", "")
+        recv = t.get("receiving_account_type", "")
+        details = t.get("details") or {}
+        originator = details.get("originator_name") or ""
+        note = details.get("description") or ""
+
+        # Classify with the same rules main() uses.
+        if transfer_type == "internal" or (orig == "rhs_account" and recv == "rhs_account"):
+            kind = "internal"
+        elif orig and recv:
+            if recv == "rhs_account" and orig != "rhs_account":
+                kind = "deposit"
+            elif orig == "rhs_account" and recv != "rhs_account":
+                kind = "deposit" if direction == "pull" else "withdrawal"
+            else:
+                continue
+        else:
+            if direction == "pull":
+                kind = "deposit"
+            elif direction == "push":
+                kind = "withdrawal"
+            else:
+                continue
+
+        # Schema confirmed from /paymenthub/unified_transfers/ probe — see
+        # cmd_debug_transfers. Important fields for tilt analysis:
+        #   • created_at — full ISO with TZ (submission time)
+        #   • updated_at — last state change (≈ completion time once state=completed)
+        #   • details.early_access_amount — instantly-tradeable portion of a deposit
+        #   • details.expected_landing_datetime — when ACH should clear
+        #   • originating_/receiving_transfer_account_info.account_name_title
+        #     — human-readable account names like "cash · Individual" vs raw "rhs_account"
+        def _to_float(v):
+            try: return float(v) if v not in (None, "") else None
+            except (TypeError, ValueError): return None
+
+        early_access = _to_float(details.get("early_access_amount")) if isinstance(details, dict) else None
+        expected_landing = details.get("expected_landing_datetime") if isinstance(details, dict) else None
+        is_instant_eligible = details.get("is_eligible_for_instant_transfer") if isinstance(details, dict) else None
+        service_fee = _to_float(t.get("service_fee"))
+        orig_info = t.get("originating_transfer_account_info") or {}
+        recv_info = t.get("receiving_transfer_account_info") or {}
+
+        out.append({
+            "id": f"transfer:{tid}" if tid else f"transfer:{date}:{amt}:{direction}:{kind}",
+            "kind": kind,
+            "date": date,
+            # Full ISO timestamps preserve time-of-day for tilt analysis. `date` stays
+            # as YYYY-MM-DD so the calendar's filter-by-date keeps working unchanged.
+            "timestamp": t.get("created_at") or "",
+            "updated_at": t.get("updated_at") or "",
+            "amount": round(amt, 2),
+            "state": state,
+            "transfer_type": transfer_type,
+            "direction": direction,
+            "orig_acct_type": orig,
+            "recv_acct_type": recv,
+            "orig_account_name": orig_info.get("account_name_title") or orig_info.get("account_name_inline") or "",
+            "recv_account_name": recv_info.get("account_name_title") or recv_info.get("account_name_inline") or "",
+            "originator": originator,
+            "note": note,
+            # Instant-deposit metadata — only present on originated_ach deposits, but
+            # safe to carry as None elsewhere. Tilt detection keys on `early_access_amount`.
+            "early_access_amount": round(early_access, 2) if early_access is not None else None,
+            "expected_landing_datetime": expected_landing,
+            "is_instant_eligible": is_instant_eligible,
+            "service_fee": round(service_fee, 2) if service_fee else None,
+        })
+
+    for f in fees:
+        try:
+            amt = float(f.get("amount", 0))
+        except (TypeError, ValueError):
+            continue
+        date = f.get("date")
+        if not date or amt == 0:
+            continue
+        fid = f.get("id") or f"{date}:{amt}"
+        out.append({
+            "id": f"gold_fee:{fid}",
+            "kind": "gold_fee",
+            "date": date,
+            "amount": round(amt, 2),
+            "state": f.get("state", "?"),
+        })
+
+    for d in divs:
+        try:
+            amt = float(d.get("amount", 0))
+        except (TypeError, ValueError):
+            continue
+        date = d.get("payable_date")
+        if not date or amt == 0:
+            continue
+        did = d.get("id") or f"{date}:{amt}"
+        instrument_url = d.get("instrument") or ""
+        instrument_id = instrument_url.rstrip("/").split("/")[-1] if instrument_url else ""
+        # Prefer the resolved ticker (set by resolve_dividend_symbols); fall back
+        # to the instrument UUID prefix so something still renders for unresolved.
+        symbol = d.get("_symbol") or ""
+        out.append({
+            "id": f"dividend:{did}",
+            "kind": "dividend",
+            "date": date,
+            "amount": round(amt, 2),
+            "state": d.get("state", "?"),
+            "symbol": symbol,                    # e.g. "SPY" when resolved, else ""
+            "instrument_id": instrument_id,      # UUID fallback for the UI
+        })
+
+    for ref in refs:
+        reward = ref.get("reward") or {}
+        date = (ref.get("created_at") or "")[:10]
+        if not date:
+            continue
+        rid = ref.get("id") or date
+        for i, s in enumerate(reward.get("stocks") or []):
+            try:
+                cost = float(s.get("cost_basis", 0))
+            except (TypeError, ValueError):
+                continue
+            if cost == 0:
+                continue
+            out.append({
+                "id": f"referral:{rid}:stock:{i}",
+                "kind": "referral",
+                "date": date,
+                "amount": round(cost, 2),
+                "state": s.get("state", "?"),
+                "asset": s.get("symbol", "?"),
+            })
+        cash_reward = reward.get("cash")
+        if cash_reward:
+            try:
+                cash_amt = float(cash_reward.get("amount", 0))
+            except (TypeError, ValueError):
+                cash_amt = 0
+            if cash_amt:
+                out.append({
+                    "id": f"referral:{rid}:cash",
+                    "kind": "referral",
+                    "date": date,
+                    "amount": round(cash_amt, 2),
+                    "state": cash_reward.get("state", "?"),
+                    "asset": "CASH",
+                })
+
+    return out
+
+
+def merge_events_to_jsonl(events: list, path: Path) -> tuple[int, int]:
+    """Merge new events into `path` (JSONL), dedup by stable id, sort by date asc.
+    Returns (existing_count, written_count).
+    """
+    existing: dict[str, dict] = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                eid = rec.get("id")
+                if eid:
+                    existing[eid] = rec
+            except json.JSONDecodeError:
+                continue
+    prior = len(existing)
+    for e in events:
+        eid = e.get("id")
+        if eid:
+            existing[eid] = e  # idempotent overwrite — latest classification wins
+    merged = sorted(existing.values(), key=lambda r: (r.get("date") or "", r.get("kind") or "", r.get("id") or ""))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        for e in merged:
+            f.write(json.dumps(e) + "\n")
+    return prior, len(merged)
+
+
 def build_historical_snapshots(equity_by_date: dict, dated: dict) -> list:
     """For each date with a known equity value, compute the as-of cashflow
     cumulative totals and derive a synthetic snapshot.
@@ -300,6 +575,12 @@ def cmd_backfill(as_json: bool = False) -> None:
 
     dated = collect_dated_cashflows(transfers, fees, divs, refs)
     log(f"  {len(dated['deposits'])} completed deposits, {len(dated['withdrawals'])} withdrawals")
+
+    # Also persist per-event log — backfill is the natural moment to rebuild it.
+    events = extract_events(transfers, fees, divs, refs)
+    events_file = SCRIPT_DIR / "outputs" / "cash_flow_events.jsonl"
+    prior, total = merge_events_to_jsonl(events, events_file)
+    log(f"  📝 events: {total} total ({total - prior:+d} new) → outputs/cash_flow_events.jsonl")
 
     # Account list
     accts_file = SCRIPT_DIR / ".rh_accounts.json"
@@ -456,18 +737,30 @@ def main(as_json=False):
     log(f"\n💰 Dividends")
     log("-" * 75)
     divs = paginate(f"{API_BASE}/dividends/", hdrs)
+    # Attach `_symbol` to each dividend so the events log shows tickers, not UUIDs.
+    resolve_dividend_symbols(divs, hdrs, log=log)
 
     total_div = 0.0
+    pending_div = 0.0
     for d in divs:
         amt = float(d["amount"])
         state = d["state"]
+        sym = d.get("_symbol") or "?"
         if state == "voided":
-            log(f"  {d['payable_date']}  ${amt:>8,.2f}  {state} (not counted)")
+            log(f"  {d['payable_date']}  {sym:<6} ${amt:>8,.2f}  {state} (not counted)")
+            continue
+        if state not in PAID_DIVIDEND_STATES:
+            # Pending / scheduled future payments: visible in the events log,
+            # but EXCLUDED from the running basis until they actually settle.
+            # Otherwise pending divs inflate basis and deflate displayed P/L.
+            pending_div += amt
+            log(f"  {d['payable_date']}  {sym:<6} ${amt:>8,.2f}  {state} (pending — not in basis)")
             continue
         total_div += amt
-        log(f"  {d['payable_date']}  ${amt:>8,.2f}  {state}")
+        log(f"  {d['payable_date']}  {sym:<6} ${amt:>8,.2f}  {state}")
 
-    log(f"\n  Total dividends: ${total_div:>10,.2f}")
+    log(f"\n  Total paid dividends: ${total_div:>10,.2f}"
+        + (f"   (+${pending_div:,.2f} pending, excluded)" if pending_div else ""))
 
     # ── 4. Referral Stock Grants ──
     log(f"\n🎁 Referral Stock Grants")
@@ -544,13 +837,19 @@ def main(as_json=False):
     log(f"\n  Total equity: ${equity:>10,.2f}")
 
     # ── 6. Summary ──
-    net_deposited = deposits_completed - withdrawals_completed
-    net_deposited_with_pending = (deposits_completed + deposits_pending) - (withdrawals_completed + withdrawals_pending)
+    # Pending transfers are baked into basis: RH already debits/credits equity
+    # the moment a transfer is initiated, so excluding pending from basis would
+    # make all_time_pnl and total_return drift by the size of any in-flight ACH.
+    # Pending almost always clears, and on the next run it'll move from pending
+    # to completed with no math change.
+    deposits_total = deposits_completed + deposits_pending
+    withdrawals_total = withdrawals_completed + withdrawals_pending
+    net_deposited = deposits_total - withdrawals_total
     cost_basis = net_deposited - total_gold + total_div + total_referral
     pnl = equity - cost_basis
-    pnl_pct = (pnl / deposits_completed * 100) if deposits_completed else 0
-    total_return = equity + withdrawals_completed - deposits_completed
-    tr_pct = (total_return / deposits_completed * 100) if deposits_completed else 0
+    pnl_pct = (pnl / deposits_total * 100) if deposits_total else 0
+    total_return = equity + withdrawals_total - deposits_total
+    tr_pct = (total_return / deposits_total * 100) if deposits_total else 0
 
     # Always append snapshot to JSONL
     entry = {
@@ -577,14 +876,23 @@ def main(as_json=False):
     with open(out_file, "a") as f:
         f.write(json.dumps(entry) + "\n")
 
+    # ── 7. Per-event log (powers calendar day-by-day cashflow visualization) ──
+    events = extract_events(transfers, fees, divs, refs)
+    events_file = SCRIPT_DIR / "outputs" / "cash_flow_events.jsonl"
+    prior, total = merge_events_to_jsonl(events, events_file)
+    new_count = total - prior
+    log(f"\n📝 Cashflow events: {total} total ({new_count:+d} new) → outputs/cash_flow_events.jsonl")
+
     if as_json:
         return
 
     print(f"\n{'=' * 75}")
-    print("📋 SUMMARY (completed transactions only)")
+    print("📋 SUMMARY (pending transfers included in basis)")
     print(f"{'=' * 75}")
-    print(f"  Deposits:           ${deposits_completed:>10,.2f}")
-    print(f"  Withdrawals:       -${withdrawals_completed:>10,.2f}")
+    pending_dep_note = f"  (+${deposits_pending:,.2f} pending)" if deposits_pending else ""
+    pending_wd_note = f"  (+${withdrawals_pending:,.2f} pending)" if withdrawals_pending else ""
+    print(f"  Deposits:           ${deposits_total:>10,.2f}{pending_dep_note}")
+    print(f"  Withdrawals:       -${withdrawals_total:>10,.2f}{pending_wd_note}")
     print(f"  Net deposited:      ${net_deposited:>10,.2f}")
     print(f"  Gold fees:         -${total_gold:>10,.2f}")
     print(f"  Dividends:         +${total_div:>10,.2f}")
@@ -594,20 +902,43 @@ def main(as_json=False):
     print(f"  Current equity:     ${equity:>10,.2f}")
     print(f"  ─────────────────────────────────")
     emoji = "🟢" if pnl >= 0 else "🔴"
-    print(f"  {emoji} All-time P/L:     ${pnl:>10,.2f}  ({pnl_pct:+.1f}% on ${deposits_completed:,.2f} deposited)")
+    print(f"  {emoji} All-time P/L:     ${pnl:>10,.2f}  ({pnl_pct:+.1f}% on ${deposits_total:,.2f} deposited)")
 
     tr_emoji = "🟢" if total_return >= 0 else "🔴"
     print(f"  {tr_emoji} Total return:     ${total_return:>10,.2f}  ({tr_pct:+.1f}%)")
     print(f"       (equity + withdrawals - deposits, includes fees/dividends/referrals)")
 
-    if deposits_pending or withdrawals_pending:
-        print(f"\n  ⏳ Pending: +${deposits_pending:,.2f} deposits, -${withdrawals_pending:,.2f} withdrawals")
-        future_basis = net_deposited_with_pending - total_gold + total_referral + total_div
-        future_pnl = equity - future_basis
-        future_deps = deposits_completed + deposits_pending
-        future_pct = (future_pnl / future_deps * 100) if future_deps else 0
-        emoji2 = "🟢" if future_pnl >= 0 else "🔴"
-        print(f"  {emoji2} P/L after pending: ${future_pnl:>10,.2f}  ({future_pct:+.1f}%)")
+
+def cmd_debug_transfers(limit: int = 3) -> None:
+    """Dump full raw JSON of the most recent N transfers from RH's unified_transfers endpoint.
+
+    Use this to inspect what fields RH actually returns — useful for figuring out where
+    instant-deposit flags, completion timestamps, and other tilt-relevant fields live.
+    """
+    token = load_token()
+    hdrs = headers(token)
+    r = requests.get(f"{API_BASE}/user/", headers=hdrs)
+    if r.status_code == 401:
+        print("❌ Token expired. Run `python hood.py --save-token \"Bearer ...\"` first.", file=sys.stderr)
+        sys.exit(1)
+    transfers = paginate(f"{BONFIRE_BASE}/paymenthub/unified_transfers/", hdrs)
+    if not transfers:
+        print("No transfers returned.")
+        return
+    # Sort newest first by created_at
+    transfers.sort(key=lambda t: t.get("created_at", ""), reverse=True)
+    sample = transfers[:limit]
+    print(f"=== {len(transfers)} total transfers; showing {len(sample)} most recent ===\n")
+    for i, t in enumerate(sample, 1):
+        print(f"--- Transfer #{i} ({t.get('state', '?')} {t.get('transfer_type', '?')}) ---")
+        print(json.dumps(t, indent=2, default=str))
+        print()
+    # Also list every distinct top-level key seen across ALL transfers — schema map
+    all_keys = set()
+    for t in transfers:
+        all_keys.update(t.keys())
+    print(f"=== All top-level keys across all {len(transfers)} transfers ===")
+    print(sorted(all_keys))
 
 
 if __name__ == "__main__":
@@ -615,8 +946,14 @@ if __name__ == "__main__":
     parser.add_argument("--json", action="store_true", help="Output summary as JSON")
     parser.add_argument("--backfill", action="store_true",
                         help="One-shot: rebuild cash_flow_historical.jsonl from RH's portfolio chart endpoint")
+    parser.add_argument("--debug-transfers", action="store_true",
+                        help="Dump the full JSON of recent transfers to inspect the schema (instant flags, completion times, etc.)")
+    parser.add_argument("--debug-limit", type=int, default=3,
+                        help="Number of recent transfers to dump with --debug-transfers (default 3)")
     args = parser.parse_args()
-    if args.backfill:
+    if args.debug_transfers:
+        cmd_debug_transfers(limit=args.debug_limit)
+    elif args.backfill:
         cmd_backfill(as_json=args.json)
     else:
         main(as_json=args.json)
