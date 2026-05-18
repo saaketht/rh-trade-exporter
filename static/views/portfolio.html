@@ -42,6 +42,14 @@
   font-size: 11px; color: #666; text-align: center;
   margin-top: 8px;
 }
+.pf-pending-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 10px; padding: 2px 10px; border-radius: 999px;
+  background: #2a2410; border: 1px solid #4a3a14; color: #fbbf24;
+  font-size: 11px; font-weight: 600; cursor: pointer;
+  transition: background .12s;
+}
+.pf-pending-pill:hover { background: #382e14; }
 .pos { color: #4ade80; }
 .neg { color: #f87171; }
 
@@ -131,8 +139,39 @@
   const latest = snapshots[snapshots.length - 1];
   const earliest = snapshots[0];
 
-  document.getElementById('portfolio-sub').textContent =
+  // Pending transfers — recompute basis-dependent KPIs on the fly so the
+  // dashboard reflects pending immediately, before the next cash_flow.py run
+  // bakes them into the persisted snapshot. RH already moves equity when an
+  // ACH is initiated, so excluding pending from basis distorts P/L.
+  const depPending = latest.deposits_pending || 0;
+  const wdPending = latest.withdrawals_pending || 0;
+  const hasPending = depPending > 0 || wdPending > 0;
+
+  if (hasPending) {
+    const depTot = (latest.deposits || 0) + depPending;
+    const wdTot = (latest.withdrawals || 0) + wdPending;
+    const netDep = depTot - wdTot;
+    const basis = netDep - (latest.gold_fees || 0) + (latest.dividends || 0) + (latest.referral_grants || 0);
+    const equity = latest.current_equity || 0;
+    latest.net_deposited = +netDep.toFixed(2);
+    latest.net_cash_basis = +basis.toFixed(2);
+    latest.all_time_pnl = +(equity - basis).toFixed(2);
+    latest.all_time_pnl_pct = depTot ? +((equity - basis) / depTot * 100).toFixed(1) : 0;
+    latest.total_return = +(equity + wdTot - depTot).toFixed(2);
+    latest.total_return_pct = depTot ? +((equity + wdTot - depTot) / depTot * 100).toFixed(1) : 0;
+  }
+
+  const subEl = document.getElementById('portfolio-sub');
+  subEl.textContent =
     `${daily.length} daily snapshot${daily.length === 1 ? '' : 's'} · latest ${latest.timestamp.slice(0, 10)}`;
+  if (hasPending) {
+    const pill = document.createElement('span');
+    pill.className = 'pf-pending-pill';
+    pill.textContent = `⏳ ${fmt$(depPending - wdPending >= 0 ? depPending - wdPending : -(depPending - wdPending))} pending`;
+    pill.title = 'Pending transfers — click for details';
+    pill.addEventListener('click', detailPending);
+    subEl.appendChild(pill);
+  }
 
   document.getElementById('portfolio-data-note').textContent =
     `Snapshot history: ${earliest.timestamp.slice(0, 10)} → ${latest.timestamp.slice(0, 10)}. ` +
@@ -194,6 +233,7 @@
     const basis = latest.net_cash_basis || 0;
     const pnl = latest.all_time_pnl || 0;
     const pct = latest.all_time_pnl_pct || 0;
+    const depTot = (latest.deposits || 0) + (latest.deposits_pending || 0);
     openModal(`
       <h2>All-time P/L</h2>
       <div class="pf-sub">Equity above what was invested net of income</div>
@@ -202,12 +242,12 @@
       ${row('Net cash basis', `−${fmt$2(basis)}`)}
       ${row('= All-time P/L', `<span class="${signCls(pnl)}">${fmt$2(pnl)} (${fmtPct(pct)})</span>`, {total: true})}
       <div class="pf-formula">net_cash_basis = net_deposited − gold_fees + dividends + referral_grants</div>
-      ${row('Net deposited', fmt$2(latest.net_deposited || 0))}
+      ${row('Net deposited' + (hasPending ? ' <span style="color:#fbbf24;font-size:11px">(incl. pending)</span>' : ''), fmt$2(latest.net_deposited || 0))}
       ${row('Gold fees', `−${fmt$2(latest.gold_fees || 0)}`)}
       ${row('Dividends', `+${fmt$2(latest.dividends || 0)}`)}
       ${row('Referral grants', `+${fmt$2(latest.referral_grants || 0)}`)}
       ${row('= Net cash basis', fmt$2(basis), {total: true})}
-      <div class="pf-sub" style="margin-top:14px">Percentage is on completed deposits (${fmt$2(latest.deposits || 0)}).</div>
+      <div class="pf-sub" style="margin-top:14px">Percentage is on total deposits including pending (${fmt$2(depTot)}).</div>
     `);
   }
 
@@ -215,6 +255,10 @@
     const equity = latest.current_equity || 0;
     const dep = latest.deposits || 0;
     const wd = latest.withdrawals || 0;
+    const depP = latest.deposits_pending || 0;
+    const wdP = latest.withdrawals_pending || 0;
+    const depTot = dep + depP;
+    const wdTot = wd + wdP;
     const tr = latest.total_return || 0;
     const trPct = latest.total_return_pct || 0;
     openModal(`
@@ -222,10 +266,11 @@
       <div class="pf-sub">If you cashed out today, this is your lifetime gain/loss net of every dollar moved in or out</div>
       <div class="pf-formula">total_return = current_equity + withdrawals − deposits</div>
       ${row('Current equity', fmt$2(equity))}
-      ${row('Withdrawals (taken out)', `+${fmt$2(wd)}`)}
-      ${row('Deposits (put in)', `−${fmt$2(dep)}`)}
+      ${row('Withdrawals (taken out)' + (wdP ? ' <span style="color:#fbbf24;font-size:11px">(incl. pending)</span>' : ''), `+${fmt$2(wdTot)}`)}
+      ${row('Deposits (put in)' + (depP ? ' <span style="color:#fbbf24;font-size:11px">(incl. pending)</span>' : ''), `−${fmt$2(depTot)}`)}
       ${row('= Total return', `<span class="${signCls(tr)}">${fmt$2(tr)} (${fmtPct(trPct)})</span>`, {total: true})}
       <div class="pf-sub" style="margin-top:14px">
+        Pending transfers are included — RH already moves equity when an ACH is initiated.
         Includes fees, dividends, and referrals implicitly (they're already reflected in current equity).
         Differs from <em>All-time P/L</em>, which compares equity to a deposit-adjusted cost basis instead.
       </div>
@@ -240,17 +285,36 @@
     const net = latest.net_deposited || 0;
     openModal(`
       <h2>Net Deposited</h2>
-      <div class="pf-sub">All ACH transfers in/out, net of pending and failed</div>
-      <div class="pf-formula">net_deposited = deposits − withdrawals (completed only)</div>
+      <div class="pf-sub">All ACH transfers in/out, including pending</div>
+      <div class="pf-formula">net_deposited = (deposits + pending) − (withdrawals + pending)</div>
       ${row('Completed deposits', `+${fmt$2(dep)}`, {color: g})}
+      ${depP ? row('Pending deposits', `+${fmt$2(depP)}`, {color: y}) : ''}
       ${row('Completed withdrawals', `−${fmt$2(wd)}`, {color: r})}
+      ${wdP ? row('Pending withdrawals', `−${fmt$2(wdP)}`, {color: y}) : ''}
       ${row('= Net deposited', fmt$2(net), {total: true})}
-      ${(depP || wdP) ? `
-        <div class="pf-sub" style="margin-top:18px">Pending (not yet counted)</div>
-        ${row('Pending deposits', `+${fmt$2(depP)}`)}
-        ${row('Pending withdrawals', `−${fmt$2(wdP)}`)}
-        ${row('Net after pending', fmt$2(net + depP - wdP), {total: true})}
-      ` : '<div class="pf-sub" style="margin-top:14px">No pending transfers.</div>'}
+      <div class="pf-sub" style="margin-top:14px">
+        ${(depP || wdP)
+          ? 'Pending transfers are folded in because RH already debits/credits equity at initiation. They\'ll move to "completed" within a few days.'
+          : 'No pending transfers.'}
+      </div>
+    `);
+  }
+
+  function detailPending() {
+    const depP = latest.deposits_pending || 0;
+    const wdP = latest.withdrawals_pending || 0;
+    const net = depP - wdP;
+    openModal(`
+      <h2>Pending Transfers</h2>
+      <div class="pf-sub">In-flight ACH activity — included in basis, will settle within a few days</div>
+      ${row('Pending deposits', `+${fmt$2(depP)}`, {color: g})}
+      ${row('Pending withdrawals', `−${fmt$2(wdP)}`, {color: r})}
+      ${row('= Net pending', `<span class="${signCls(net)}">${fmt$2(net)}</span>`, {total: true})}
+      <div class="pf-sub" style="margin-top:14px">
+        These are folded into Net Deposited / All-time P/L / Total Return because Robinhood already
+        moves equity when a transfer is initiated. On the next <code>cash_flow.py</code> run they'll
+        flip from "pending" to "completed" with no change to your P/L numbers.
+      </div>
     `);
   }
 
