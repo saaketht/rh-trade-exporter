@@ -124,6 +124,14 @@
     Only one job at a time.
   </p>
   <div class="adm-runs" id="adm-runs">
+    <div class="adm-run-row" data-script="hood">
+      <div class="adm-run-meta">
+        <span class="adm-run-name">hood.py</span>
+        <span class="adm-run-desc">Pull options trades since last fetch → spy_trades.csv (~30-90s)</span>
+      </div>
+      <span class="adm-run-status">idle</span>
+      <button class="adm-btn">Run</button>
+    </div>
     <div class="adm-run-row" data-script="cash_flow">
       <div class="adm-run-meta">
         <span class="adm-run-name">cash_flow.py</span>
@@ -132,10 +140,18 @@
       <span class="adm-run-status">idle</span>
       <button class="adm-btn">Run</button>
     </div>
-    <div class="adm-run-row" data-script="hood">
+    <div class="adm-run-row" data-script="spy_intraday">
       <div class="adm-run-meta">
-        <span class="adm-run-name">hood.py</span>
-        <span class="adm-run-desc">Pull options trades since last fetch → spy_trades.csv (~30–90s)</span>
+        <span class="adm-run-name">spy_intraday.py</span>
+        <span class="adm-run-desc">Cache previous trading day + today's SPY 5m bars from Polygon → day-modal chart</span>
+      </div>
+      <span class="adm-run-status">idle</span>
+      <button class="adm-btn">Run</button>
+    </div>
+    <div class="adm-run-row" data-script="spy_daily">
+      <div class="adm-run-meta">
+        <span class="adm-run-name">spy_daily.py</span>
+        <span class="adm-run-desc">Refresh SPY + VIX daily OHLC cache (yfinance) → calendar overlay</span>
       </div>
       <span class="adm-run-status">idle</span>
       <button class="adm-btn">Run</button>
@@ -144,6 +160,14 @@
       <div class="adm-run-meta">
         <span class="adm-run-name">cash_flow.py --backfill</span>
         <span class="adm-run-desc">Rebuild full historical chart from RH's portfolio performance endpoint</span>
+      </div>
+      <span class="adm-run-status">idle</span>
+      <button class="adm-btn">Run</button>
+    </div>
+    <div class="adm-run-row" data-script="spy_intraday_back">
+      <div class="adm-run-meta">
+        <span class="adm-run-name">spy_intraday.py --backfill</span>
+        <span class="adm-run-desc">Walk all missing weekdays in Polygon's 2y window (slow — ~13s per day)</span>
       </div>
       <span class="adm-run-status">idle</span>
       <button class="adm-btn">Run</button>
