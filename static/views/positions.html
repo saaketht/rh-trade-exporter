@@ -1,0 +1,168 @@
+<style>
+.pos-h1 { display: flex; align-items: baseline; gap: 14px; }
+.pos-h1 .count { font-size: 13px; color: #888; font-weight: 400; }
+
+.pos-sub { color: #888; font-size: 12px; margin-bottom: 18px; }
+
+.pos-empty {
+  background: #1a1d27; border: 1px solid #2a2d3a;
+  border-radius: 10px; padding: 28px; text-align: center;
+  color: #888; font-size: 13px;
+}
+.pos-empty .big { color: #ccc; font-size: 15px; margin-bottom: 8px; display: block; }
+
+.pos-section { margin-bottom: 28px; }
+.pos-section-head {
+  font-size: 11px; color: #888; text-transform: uppercase;
+  letter-spacing: 0.8px; font-weight: 600; margin-bottom: 8px;
+}
+
+.pos-table {
+  background: #1a1d27; border: 1px solid #2a2d3a;
+  border-radius: 10px; overflow: hidden;
+}
+.pos-thead, .pos-row {
+  display: grid;
+  grid-template-columns: 130px 60px 90px 110px 110px 100px 80px 1fr;
+  gap: 12px; padding: 11px 16px; align-items: center;
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+}
+.pos-thead {
+  font-size: 10px; color: #888; text-transform: uppercase;
+  letter-spacing: 0.6px; font-weight: 600;
+  background: #161922; border-bottom: 1px solid #2a2d3a;
+}
+.pos-row + .pos-row { border-top: 1px solid #232633; }
+.pos-row:hover { background: #20242f; }
+.pos-row.expired { opacity: 0.55; }
+.pos-row.flash {
+  animation: pos-flash 1.8s ease-out;
+}
+@keyframes pos-flash {
+  0%   { background: rgba(250,204,21,0.32); box-shadow: 0 0 0 2px rgba(250,204,21,0.6) inset; }
+  20%  { background: rgba(250,204,21,0.22); }
+  100% { background: transparent; box-shadow: none; }
+}
+
+.pos-row .p-contract { color: #fff; font-weight: 600; }
+.pos-row .p-qty      { color: #ccc; }
+.pos-row .p-strike   { color: #aaa; }
+.pos-row .p-entry    { color: #888; }
+.pos-row .p-expiry   { color: #aaa; font-size: 11.5px; }
+.pos-row .p-dte      { color: #ccc; font-weight: 500; }
+.pos-row .p-dte.urgent   { color: #fb923c; }
+.pos-row .p-dte.expired  { color: #f87171; }
+.pos-row .p-days     { color: #888; }
+.pos-row .p-account  { color: #666; font-size: 11px; font-family: ui-monospace, monospace; }
+
+.pos-note {
+  font-size: 11px; color: #666; margin-top: 12px; padding: 0 4px;
+}
+.pos-note .strong { color: #888; }
+</style>
+
+<h1 class="pos-h1">Positions <span class="count" id="pos-count"></span></h1>
+<p class="pos-sub" id="pos-sub">Loading…</p>
+
+<div id="pos-body"></div>
+
+<script>
+(async function() {
+  const positions = await apiFetch('/api/positions');
+  const subEl = document.getElementById('pos-sub');
+  const bodyEl = document.getElementById('pos-body');
+  const countEl = document.getElementById('pos-count');
+
+  countEl.textContent = positions.length ? `(${positions.length})` : '';
+
+  if (!positions.length) {
+    subEl.textContent = '';
+    bodyEl.innerHTML = `<div class="pos-empty">
+      <span class="big">No open positions.</span>
+      Once you have unmatched opens (contracts entered without a same-day close), they'll show up here.
+      <br><br>For 0DTE-only trading you'll rarely see anything here.
+    </div>`;
+    return;
+  }
+
+  // Source freshness reminder — unmatched_opens.csv only updates when hood.py runs
+  subEl.innerHTML = `Currently held contracts from <code>unmatched_opens.csv</code>.
+    Sorted by nearest expiry first. Run <code>python hood.py</code> (or Admin → Run hood) to refresh.`;
+
+  const fmt = (v) => v == null || v === '' ? '—' : v;
+  const fmtPrice = (n) => (n == null || isNaN(n)) ? '—' : '$' + Number(n).toFixed(2);
+  const typeAbbr = (t) => t === 'Call' ? 'C' : t === 'Put' ? 'P' : '?';
+
+  // Split into live + expired sections so expired contracts don't clutter the active view
+  const live = positions.filter(p => !p.expired);
+  const expired = positions.filter(p => p.expired);
+
+  const tableHTML = (rows) => `
+    <div class="pos-table">
+      <div class="pos-thead">
+        <span>Contract</span>
+        <span>Qty</span>
+        <span>Strike</span>
+        <span>Entry</span>
+        <span>Expiry</span>
+        <span>DTE</span>
+        <span>Days held</span>
+        <span>Account</span>
+      </div>
+      ${rows.map(p => {
+        const dteCls = p.expired ? 'expired' : (p.dte_remaining != null && p.dte_remaining <= 1) ? 'urgent' : '';
+        const dteLabel = p.expired ? 'expired' : (p.dte_remaining == null ? '—' : (p.dte_remaining === 0 ? '0 (today)' : p.dte_remaining + 'd'));
+        const daysHeldLabel = p.days_held == null ? '—' : (p.days_held === 0 ? 'today' : p.days_held + 'd');
+        const ckey = (p.contract_key || '').replace(/"/g, '');
+        return `<div class="pos-row ${p.expired ? 'expired' : ''}" data-contract-key="${ckey}">
+          <span class="p-contract">${fmt(p.symbol)} ${fmt(p.strike)}${typeAbbr(p.type)}</span>
+          <span class="p-qty">×${fmt(p.qty)}</span>
+          <span class="p-strike">${fmtPrice(p.entry_price)}</span>
+          <span class="p-entry">${fmt(p.date)} ${fmt(p.entry_time || '').slice(0,5)}</span>
+          <span class="p-expiry">${fmt(p.expiry)}</span>
+          <span class="p-dte ${dteCls}">${dteLabel}</span>
+          <span class="p-days">${daysHeldLabel}</span>
+          <span class="p-account">${fmt(p.account)}</span>
+        </div>`;
+      }).join('')}
+    </div>`;
+
+  let html = '';
+  if (live.length) {
+    html += `<div class="pos-section">
+      <div class="pos-section-head">Active (${live.length})</div>
+      ${tableHTML(live)}
+    </div>`;
+  }
+  if (expired.length) {
+    html += `<div class="pos-section">
+      <div class="pos-section-head">Expired / awaiting reconciliation (${expired.length})</div>
+      ${tableHTML(expired)}
+    </div>`;
+  }
+  html += `<p class="pos-note">
+    <span class="strong">Note:</span> live mark prices and unrealized P/L are not yet wired up.
+    Coming with the next pass — requires resolving each contract to a Robinhood instrument URL
+    and hitting <code>/marketdata/options/</code> on demand.
+  </p>`;
+  bodyEl.innerHTML = html;
+
+  // Handle deep-link from the calendar's Carried Positions section.
+  // URL hash format: #positions:<contract_key>
+  // Highlight the matching row with a flash animation.
+  const m = (window.location.hash || '').match(/^#positions:(.+)$/);
+  if (m) {
+    const target = decodeURIComponent(m[1]);
+    const row = bodyEl.querySelector(`[data-contract-key="${CSS.escape(target)}"]`);
+    if (row) {
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Apply flash on next frame so scroll has begun
+      requestAnimationFrame(() => row.classList.add('flash'));
+      // Clean up after animation so re-navigating refires it cleanly
+      setTimeout(() => row.classList.remove('flash'), 2000);
+    }
+    // One-shot — clear the hash so re-entering Positions doesn't re-trigger
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+})();
+</script>
