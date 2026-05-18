@@ -263,6 +263,117 @@ class TestGetDaily:
         assert data[0]["date"] == "2026-03-05"
         assert data[1]["date"] == "2026-03-10"
 
+    def test_buckets_multiday_by_exit_date(self, client, tmp_outputs):
+        """Option II: 1DTE+ trades attribute P/L to the close date, not the entry date."""
+        headers = ["Trade #", "Date", "Symbol", "P/L ($)", "Is Win", "Cumulative P/L ($)", "VIX",
+                   "Entry Time", "Hold Time (min)"]
+        write_csv(tmp_outputs / "spy_trades.csv", headers, [
+            # Same-day trade on 5/6 — stays on 5/6
+            {"Trade #": "1", "Date": "5/6/2026", "Symbol": "SPY", "P/L ($)": "+50", "Is Win": "1",
+             "Cumulative P/L ($)": "50", "VIX": "17", "Entry Time": "10:00:00", "Hold Time (min)": "30"},
+            # Overnight trade opened 5/6 15:44, hold 1091 min → closes 5/7 09:55. Should attribute to 5/7.
+            {"Trade #": "2", "Date": "5/6/2026", "Symbol": "SPY", "P/L ($)": "-10", "Is Win": "0",
+             "Cumulative P/L ($)": "40", "VIX": "17", "Entry Time": "15:44:53", "Hold Time (min)": "1091"},
+            # Same-day trade on 5/7
+            {"Trade #": "3", "Date": "5/7/2026", "Symbol": "SPY", "P/L ($)": "+25", "Is Win": "1",
+             "Cumulative P/L ($)": "65", "VIX": "17.4", "Entry Time": "11:00:00", "Hold Time (min)": "5"},
+        ])
+        data = client.get("/api/trades/daily").json()
+        assert len(data) == 2
+        # 5/6 should ONLY have the same-day +50 (the -10 moved to 5/7's bucket)
+        assert data[0]["date"] == "2026-05-06"
+        assert data[0]["pl"] == 50
+        assert data[0]["num_trades"] == 1
+        # 5/7 should include the -10 carried in PLUS the +25 same-day = +15
+        assert data[1]["date"] == "2026-05-07"
+        assert data[1]["pl"] == 15
+        assert data[1]["num_trades"] == 2
+        # Cumulative recomputes in exit-date order: +50, then +50 + +15 = +65
+        assert data[0]["cumulative_pl"] == 50
+        assert data[1]["cumulative_pl"] == 65
+
+    def test_trade_includes_exit_date(self, client, tmp_outputs):
+        """Each trade row in /api/trades carries an exit_date the frontend can filter on."""
+        headers = ["Trade #", "Date", "Symbol", "P/L ($)", "Entry Time", "Hold Time (min)"]
+        write_csv(tmp_outputs / "spy_trades.csv", headers, [
+            {"Trade #": "1", "Date": "5/6/2026", "Symbol": "SPY", "P/L ($)": "10",
+             "Entry Time": "15:44:53", "Hold Time (min)": "1091"},
+        ])
+        data = client.get("/api/trades?symbol=SPY").json()
+        assert data[0]["exit_date"] == "2026-05-07"
+
+
+# ──────────────────────────────────────────────
+# API: /api/positions
+# ──────────────────────────────────────────────
+
+class TestGetPositions:
+    UNMATCHED_HEADERS = [
+        "Date", "Account", "Symbol", "Type", "Strike", "Expiry",
+        "Side", "Unmatched Qty", "Entry Price/Share", "Entry Time", "Group ID",
+    ]
+
+    def test_empty(self, client, tmp_outputs):
+        assert client.get("/api/positions").json() == []
+
+    def test_computes_days_held_and_dte(self, client, tmp_outputs):
+        """Days held and DTE remaining are derived from entry date / expiry vs today."""
+        from datetime import date, timedelta
+        today = date.today()
+        entry = today - timedelta(days=3)
+        expiry = today + timedelta(days=5)
+        write_csv(tmp_outputs / "unmatched_opens.csv", self.UNMATCHED_HEADERS, [
+            {"Date": entry.strftime("%-m/%-d/%Y"), "Account": "X1", "Symbol": "SPY",
+             "Type": "Call", "Strike": "510", "Expiry": expiry.isoformat(),
+             "Side": "buy", "Unmatched Qty": "2", "Entry Price/Share": "1.25",
+             "Entry Time": "10:30:00", "Group ID": "g1"},
+        ])
+        data = client.get("/api/positions").json()
+        assert len(data) == 1
+        p = data[0]
+        assert p["symbol"] == "SPY"
+        assert p["strike"] == 510
+        assert p["type"] == "Call"
+        assert p["qty"] == 2
+        assert p["entry_price"] == 1.25
+        assert p["days_held"] == 3
+        assert p["dte_remaining"] == 5
+        assert p["expired"] is False
+        assert p["contract_key"] == f"SPY-510-Call-{expiry.isoformat()}"
+
+    def test_marks_expired_positions(self, client, tmp_outputs):
+        from datetime import date, timedelta
+        expired_on = (date.today() - timedelta(days=2)).isoformat()
+        write_csv(tmp_outputs / "unmatched_opens.csv", self.UNMATCHED_HEADERS, [
+            {"Date": "5/1/2026", "Account": "X1", "Symbol": "SPY",
+             "Type": "Put", "Strike": "500", "Expiry": expired_on,
+             "Side": "buy", "Unmatched Qty": "1", "Entry Price/Share": "0.50",
+             "Entry Time": "09:35:00", "Group ID": "g2"},
+        ])
+        data = client.get("/api/positions").json()
+        assert data[0]["expired"] is True
+        assert data[0]["dte_remaining"] == -2
+
+    def test_sorted_by_nearest_expiry(self, client, tmp_outputs):
+        """Active positions list near-dated contracts first."""
+        from datetime import date, timedelta
+        today = date.today()
+        write_csv(tmp_outputs / "unmatched_opens.csv", self.UNMATCHED_HEADERS, [
+            # Far-dated first in the CSV
+            {"Date": "5/1/2026", "Account": "X1", "Symbol": "SPY", "Type": "Call",
+             "Strike": "520", "Expiry": (today + timedelta(days=30)).isoformat(),
+             "Side": "buy", "Unmatched Qty": "1", "Entry Price/Share": "2.00",
+             "Entry Time": "10:00:00", "Group ID": "far"},
+            # Near-dated second
+            {"Date": "5/9/2026", "Account": "X1", "Symbol": "SPY", "Type": "Call",
+             "Strike": "515", "Expiry": (today + timedelta(days=1)).isoformat(),
+             "Side": "buy", "Unmatched Qty": "1", "Entry Price/Share": "0.40",
+             "Entry Time": "10:00:00", "Group ID": "near"},
+        ])
+        data = client.get("/api/positions").json()
+        assert data[0]["group_id"] == "near"
+        assert data[1]["group_id"] == "far"
+
 
 # ──────────────────────────────────────────────
 # API: /api/summary
@@ -373,6 +484,101 @@ class TestOtherEndpoints:
         on_clash = [d for d in data if d["timestamp"].startswith("2026-03-05")][0]
         assert on_clash["equity"] == 950
         assert on_clash.get("synthetic") is False
+
+    def test_cash_flow_events_empty(self, client, tmp_outputs):
+        r = client.get("/api/cash-flow/events")
+        assert r.json() == []
+
+    def test_cash_flow_events_returns_sorted(self, client, tmp_outputs):
+        (tmp_outputs / "cash_flow_events.jsonl").write_text(
+            '{"id":"transfer:b","kind":"withdrawal","date":"2026-05-02","amount":50,"state":"completed"}\n'
+            '{"id":"transfer:a","kind":"deposit","date":"2026-05-01","amount":100,"state":"completed"}\n'
+            '{"id":"transfer:c","kind":"internal","date":"2026-05-01","amount":25,"state":"completed"}\n'
+        )
+        data = client.get("/api/cash-flow/events").json()
+        # Sorted by date asc, then kind
+        assert [e["id"] for e in data] == ["transfer:a", "transfer:c", "transfer:b"]
+
+    def test_spy_daily_empty(self, client, tmp_outputs):
+        """Endpoint returns an empty payload (not 404) when the cache hasn't been built."""
+        r = client.get("/api/spy/daily")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["days"] == []
+        assert body["range"] == {"start": None, "end": None}
+
+    def test_spy_daily_reads_cache(self, client, tmp_outputs):
+        import json as _json
+        (tmp_outputs / "spy_daily.json").write_text(_json.dumps({
+            "generated_at": "2026-05-14T04:00:00Z",
+            "range": {"start": "2026-05-12", "end": "2026-05-13"},
+            "days": [
+                {"date": "2026-05-12", "spy_close": 510.00, "vix_close": 17.0},
+                {"date": "2026-05-13", "spy_close": 512.55, "spy_pct": 0.50, "vix_close": 17.5},
+            ],
+        }))
+        r = client.get("/api/spy/daily")
+        body = r.json()
+        assert len(body["days"]) == 2
+        assert body["days"][1]["spy_pct"] == 0.50
+
+    def test_spy_intraday_not_cached(self, client, tmp_outputs):
+        body = client.get("/api/spy/intraday/2026-05-13").json()
+        assert body == {"date": "2026-05-13", "available": False,
+                        "reason": "not_cached", "bars": []}
+
+    def test_spy_intraday_reads_cache(self, client, tmp_outputs):
+        import json as _json
+        (tmp_outputs / "spy_intraday").mkdir()
+        (tmp_outputs / "spy_intraday" / "2026-05-13.json").write_text(_json.dumps({
+            "date": "2026-05-13", "source": "polygon", "interval": "5m",
+            "bars": [{"t": 1715600400, "o": 510, "h": 511, "l": 509, "c": 510.5, "v": 1000}],
+        }))
+        body = client.get("/api/spy/intraday/2026-05-13").json()
+        assert body["date"] == "2026-05-13"
+        assert len(body["bars"]) == 1
+        assert body["bars"][0]["o"] == 510
+
+    def test_spy_intraday_passes_through_out_of_plan(self, client, tmp_outputs):
+        import json as _json
+        (tmp_outputs / "spy_intraday").mkdir()
+        (tmp_outputs / "spy_intraday" / "2020-01-01.json").write_text(_json.dumps({
+            "date": "2020-01-01", "available": False, "reason": "out_of_plan",
+            "message": "Your plan doesn't include this data timeframe.",
+        }))
+        body = client.get("/api/spy/intraday/2020-01-01").json()
+        assert body["available"] is False
+        assert body["reason"] == "out_of_plan"
+
+    def test_spy_intraday_handles_corrupt(self, client, tmp_outputs):
+        (tmp_outputs / "spy_intraday").mkdir()
+        (tmp_outputs / "spy_intraday" / "2026-05-13.json").write_text("{not valid")
+        body = client.get("/api/spy/intraday/2026-05-13").json()
+        assert body["available"] is False
+        assert body["reason"] == "corrupt"
+
+    def test_spy_intraday_validates_date_format(self, client, tmp_outputs):
+        # Path traversal attempts and malformed dates → 400
+        r = client.get("/api/spy/intraday/../etc/passwd")
+        assert r.status_code in (400, 404)  # FastAPI may 404 if router rejects the segment
+        r = client.get("/api/spy/intraday/2026-13-45")
+        assert r.status_code == 400
+
+    def test_spy_daily_handles_corrupt_json(self, client, tmp_outputs):
+        """Bad JSON shouldn't 500 — degrade to empty payload."""
+        (tmp_outputs / "spy_daily.json").write_text("{not valid json")
+        r = client.get("/api/spy/daily")
+        assert r.status_code == 200
+        assert r.json()["days"] == []
+
+    def test_cash_flow_events_filter_by_date(self, client, tmp_outputs):
+        (tmp_outputs / "cash_flow_events.jsonl").write_text(
+            '{"id":"a","kind":"deposit","date":"2026-05-01","amount":100,"state":"completed"}\n'
+            '{"id":"b","kind":"deposit","date":"2026-05-02","amount":200,"state":"completed"}\n'
+        )
+        data = client.get("/api/cash-flow/events?date=2026-05-02").json()
+        assert len(data) == 1
+        assert data[0]["id"] == "b"
 
     def test_cash_flow_historical_only(self, client, tmp_outputs):
         """If only the historical file exists, it's still served."""

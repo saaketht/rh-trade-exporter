@@ -186,7 +186,7 @@ class TestAppendRows:
     def test_aa_ae_remain_blank(self):
         wb, ws = _seed_journal_with_row2()
         js.append_rows(ws, [_sample_trade()], start_row=3, last_trade_num=0)
-        for col_idx in range(27, 32):  # AA–AE
+        for col_idx in range(27, 32):  # AA-AE
             assert ws.cell(3, col_idx).value is None
 
     def test_row_height_set(self):
