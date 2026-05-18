@@ -184,13 +184,32 @@
     const grossLoss = Math.abs(lossPLs.reduce((a,b) => a+b, 0));
     const pf = grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : 'N/A';
     const wr = (wins.length / Math.max(wins.length + losses.length, 1) * 100).toFixed(1);
+    // Expectancy: per-trade EV in dollars. (WR × avg win) − (LR × avg loss).
+    // Uses decimal proportions, treats BE trades as neither (excluded from base).
+    const decided = wins.length + losses.length;
+    const winRate = decided ? wins.length / decided : 0;
+    const lossRate = decided ? losses.length / decided : 0;
+    const expectancy = Math.round(winRate * avgWin + lossRate * avgLoss);  // avgLoss is already negative
 
-    // Best/worst day
+    // Best/worst day + concentration (replaces the old "Is It All From One Day?" block).
+    // Symmetric framing: top-N% of days as a share of total P/L, plus worst-N% as the
+    // counterweight. Single sentence, no accusatory what-ifs.
     const byDate = {};
     T.forEach(t => { byDate[t.date] = (byDate[t.date] || 0) + t.pl; });
     const dailyPLs = Object.values(byDate);
+    const dailyCount = dailyPLs.length;
     const bestDay = Math.max(...dailyPLs);
     const worstDay = Math.min(...dailyPLs);
+    const sortedDaysDesc = [...dailyPLs].sort((a, b) => b - a);
+    // Top-10% and bottom-10% contribution (min 1 day, max all-but-one for sanity)
+    const topN = Math.max(1, Math.floor(dailyCount * 0.1));
+    const sumTop = sortedDaysDesc.slice(0, topN).reduce((a, b) => a + b, 0);
+    const sumBottom = sortedDaysDesc.slice(-topN).reduce((a, b) => a + b, 0);
+    // "Top 10% of days produced X% of gross green-day P/L"
+    const grossGreenPL = dailyPLs.filter(p => p > 0).reduce((a, b) => a + b, 0);
+    const grossRedPL = dailyPLs.filter(p => p < 0).reduce((a, b) => a + b, 0);
+    const topShare = grossGreenPL > 0 ? Math.round(sumTop / grossGreenPL * 100) : 0;
+    const bottomShare = grossRedPL < 0 ? Math.round(sumBottom / grossRedPL * 100) : 0;
 
     // Max consecutive losses & wins
     let maxLoss = 0, curLoss = 0, maxWin = 0, curWin = 0;
@@ -215,6 +234,7 @@
       ['Avg Win', plStr(avgWin), 'pos'],
       ['Avg Loss', plStr(Math.abs(avgLoss)), 'neg'],
       ['Profit Factor', pf, parseFloat(pf) >= 1 ? 'pos' : 'neg'],
+      ['Expectancy', plStr(expectancy), expectancy >= 0 ? 'pos' : 'neg'],
       ['Best Day', plStr(bestDay), 'pos'],
       ['Worst Day', plStr(worstDay), 'neg'],
       ['Max Consec. Wins', maxWin, 'pos'],
@@ -233,9 +253,15 @@
     const insightText = document.getElementById('analysis-insight-text');
     if (T.length >= 20) {
       insightEl.style.display = '';
+      // Concentration phrasing — symmetric, descriptive, no "what if you removed" framing.
+      // Use top-10%-of-days and bottom-10%-of-days as the counterweight pair.
+      const concentrationLine = dailyCount >= 10
+        ? `Your top ${topN} day${topN > 1 ? 's' : ''} produced <span class="pos">${topShare}%</span> of green-day P/L; your bottom ${topN} accounted for <span class="neg">${bottomShare}%</span> of red-day P/L. `
+        : '';
       insightText.innerHTML =
-        `You're <span class="${totalPL >= 0 ? 'pos' : 'neg'}">${plStr(totalPL)}</span> across ${T.length} trades with a ${pf} profit factor. ` +
+        `You're <span class="${totalPL >= 0 ? 'pos' : 'neg'}">${plStr(totalPL)}</span> across ${T.length} trades with a ${pf} profit factor and <span class="${expectancy >= 0 ? 'pos' : 'neg'}">${plStr(expectancy)}</span> expectancy per trade. ` +
         `Avg win ($${Math.abs(avgWin)}) ${Math.abs(avgWin) > Math.abs(avgLoss) ? 'exceeds' : 'trails'} avg loss ($${Math.abs(avgLoss)}). ` +
+        concentrationLine +
         `<span class="pos">Puts</span>: ${puts.length} trades, ${putWR}% WR, ${plStr(putPL)}. ` +
         `<span class="${callPL >= 0 ? 'pos' : 'neg'}">Calls</span>: ${calls.length} trades, ${callWR}% WR, ${plStr(callPL)}.`;
     } else {
