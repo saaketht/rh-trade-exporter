@@ -5,6 +5,28 @@
   display: none; align-items: center; justify-content: center; z-index: 1000;
 }
 .cal-modal-bg.open { display: flex; }
+/* Stage wraps the modal in a flex row alongside the prev/next nav buttons.
+   Buttons sit flush against the modal sides; backdrop click still closes
+   because the bg's empty area is outside the stage (and e.target === bg). */
+.cal-modal-stage {
+  position: relative;
+  display: flex; align-items: stretch;
+  max-height: 85vh;
+}
+.cal-nav-side {
+  flex: 0 0 auto; width: 44px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; background: transparent; border: none;
+  color: rgba(255,255,255,0.18); font-size: 22px;
+  transition: all 0.15s;
+  user-select: none;
+}
+.cal-nav-side:hover:not(:disabled) {
+  color: rgba(255,255,255,0.85);
+  background: rgba(255,255,255,0.04);
+}
+.cal-nav-side:active:not(:disabled) { background: rgba(255,255,255,0.08); }
+.cal-nav-side:disabled { opacity: 0.16; cursor: default; }
 .cal-modal {
   background: #1a1d27; border-radius: 12px; padding: 24px 28px;
   max-width: 720px; width: 92%; max-height: 85vh; overflow-y: auto;
@@ -60,34 +82,498 @@
   font-size: 9px; color: #666; margin-left: 6px;
   letter-spacing: 0.4px; text-transform: uppercase;
 }
+
+/* View-mode toggle */
+.cal-mode-row {
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+  margin: -4px 0 14px;
+}
+.cal-mode-row .lbl {
+  font-size: 10px; color: #666; text-transform: uppercase;
+  letter-spacing: 0.8px; margin-right: 6px;
+}
+.cal-mode-chip {
+  padding: 5px 12px; border-radius: 8px; font-size: 11.5px;
+  cursor: pointer; background: transparent; color: #888;
+  border: 1px solid transparent; transition: all 0.12s;
+  font-weight: 600; letter-spacing: 0.3px;
+}
+.cal-mode-chip:hover { color: #ccc; background: #1a1d27; }
+.cal-mode-chip.active {
+  background: #262938; color: #fff; border-color: #3a3d4a;
+}
+
+/* Day-header extras: friction + add-direction counters */
+.cal-meta-row {
+  display: flex; gap: 18px; flex-wrap: wrap;
+  font-size: 11.5px; color: #888; padding: 4px 0 10px;
+  border-bottom: 1px dashed #2a2d3a; margin-bottom: 14px;
+}
+.cal-meta-row > span { cursor: help; transition: background 0.18s, color 0.18s; padding: 3px 8px; border-radius: 6px; margin: -3px -8px; }
+.cal-meta-row > span:hover { background: rgba(255,255,255,0.04); }
+
+/* Modern tooltip bubble */
+.cal-tip {
+  position: fixed; z-index: 2000; pointer-events: none;
+  background: #20242f; color: #ddd;
+  border: 1px solid #3a3d4a; border-radius: 8px;
+  padding: 10px 14px; font-size: 11.5px; line-height: 1.55;
+  max-width: 320px;
+  box-shadow: 0 6px 28px rgba(0,0,0,0.5);
+  opacity: 0; transform: translateY(4px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  white-space: pre-line;
+}
+.cal-tip.open { opacity: 1; transform: translateY(0); }
+.cal-tip strong { color: #fff; font-weight: 600; }
+[data-tip] { cursor: help; }
+
+/* Day-cell flow indicators — small corner icons when cash flows happened that day */
+.day-cell .flow-icons {
+  position: absolute; top: 2px; right: 3px;
+  font-size: 9px; line-height: 1; letter-spacing: -1px;
+  display: flex; gap: 1px;
+}
+.day-cell .fi-deposit    { color: #4ade80; }
+.day-cell .fi-withdrawal { color: #f87171; }
+.day-cell .fi-internal   { color: #facc15; }
+.day-cell .fi-pending    { opacity: 0.55; }
+
+/* Market context overlays — SPY day % and VIX value, shown in cells when toggled on */
+.day-cell .ctx { font-size: 8px; line-height: 1; margin-top: 2px; display: flex; gap: 6px; justify-content: center; }
+.day-cell .ctx .spy.pos { color: #4ade80; opacity: 0.85; }
+.day-cell .ctx .spy.neg { color: #f87171; opacity: 0.85; }
+.day-cell .ctx .spy.neu { color: #888; }
+.day-cell .ctx .vix      { color: #888; }
+.day-cell .ctx .vix.elev { color: #facc15; }
+.day-cell .ctx .vix.high { color: #fb923c; }
+.day-cell .ctx .vix.crit { color: #f87171; }
+.day-cell.no-trade .ctx  { opacity: 0.6; }
+
+/* Overlay toggle row above the calendar grid */
+.cal-overlay-row {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+.cal-overlay-row .lbl {
+  font-size: 10px; color: #666; text-transform: uppercase;
+  letter-spacing: 0.8px; margin-right: 6px;
+}
+.overlay-chip {
+  padding: 4px 10px; border-radius: 6px; font-size: 11px;
+  cursor: pointer; background: transparent; color: #888;
+  border: 1px solid #2a2d3a; transition: all 0.12s;
+  font-weight: 500; letter-spacing: 0.3px;
+  user-select: none;
+}
+.overlay-chip:hover { color: #ccc; background: #1a1d27; }
+.overlay-chip.active {
+  background: #262938; color: #fff; border-color: #3a3d4a;
+}
+
+/* Modal Cash-flow section — collapsible header above the view body */
+.cf-section {
+  margin-bottom: 14px;
+  background: #161922; border: 1px solid #232633;
+  border-radius: 8px; overflow: hidden;
+}
+.cf-section[open] { background: #1a1d27; }
+.cf-summary {
+  display: grid;
+  grid-template-columns: 14px 90px 1fr auto 80px auto;
+  gap: 10px; align-items: center;
+  padding: 10px 14px; cursor: pointer;
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+  list-style: none; user-select: none;
+  transition: background 0.12s;
+}
+.cf-summary::-webkit-details-marker { display: none; }
+.cf-summary:hover { background: #20242f; }
+.cf-section[open] .cf-summary { border-bottom: 1px solid #2a2d3a; }
+.cf-section[open] .cf-caret { transform: rotate(90deg); }
+.cf-caret { color: #666; font-size: 10px; transition: transform 0.15s; display: inline-block; }
+.cf-summary-label {
+  color: #aaa; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.7px; font-weight: 600;
+}
+.cf-summary-amount { color: #ddd; font-weight: 600; font-size: 13px; }
+.cf-summary-chips { display: inline-flex; gap: 4px; align-items: center; }
+.cf-summary-count { color: #666; font-size: 11px; text-align: right; }
+
+.cf-chip {
+  font-size: 10px; padding: 2px 6px; border-radius: 4px;
+  background: rgba(255,255,255,0.04); color: #aaa;
+  letter-spacing: 0.3px; font-weight: 500;
+}
+.cf-chip.cf-in       { background: rgba(74,222,128,0.16); color: #4ade80; }
+.cf-chip.cf-out      { background: rgba(248,113,113,0.16); color: #f87171; }
+.cf-chip.cf-int      { background: rgba(250,204,21,0.16); color: #facc15; }
+.cf-chip.cf-pending  { background: rgba(250,204,21,0.12); color: #facc15; opacity: 0.85; }
+.cf-chip.cf-failed   { background: rgba(248,113,113,0.10); color: #f87171; opacity: 0.7; }
+.cf-chip.cf-instant  { background: rgba(96,165,250,0.16); color: #60a5fa; cursor: help; }
+
+.cf-body { padding: 4px 10px 10px; }
+.cf-thead, .cf-row {
+  display: grid;
+  grid-template-columns: 22px 90px 60px 1fr 110px 80px;
+  gap: 10px; align-items: center;
+  font-variant-numeric: tabular-nums;
+}
+.cf-thead {
+  font-size: 10px; color: #666; text-transform: uppercase;
+  letter-spacing: 0.6px; padding: 8px 4px 6px;
+  border-bottom: 1px solid #232633;
+}
+.cf-row {
+  padding: 7px 4px; font-size: 12px;
+  border-radius: 4px;
+}
+.cf-row + .cf-row { border-top: 1px solid #1f2230; }
+.cf-row .cf-ico { font-size: 13px; text-align: center; }
+.cf-row .cf-kind { color: #aaa; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.cf-row .cf-date { color: #888; font-size: 11px; }
+.cf-row .cf-note { color: #aaa; font-size: 11.5px; }
+.cf-row .cf-amount { text-align: right; font-weight: 600; }
+.cf-row .cf-amount.pos { color: #4ade80; }
+.cf-row .cf-amount.neg { color: #f87171; }
+.cf-row .cf-amount.neutral { color: #facc15; }
+.cf-row .cf-state { text-align: right; font-size: 10px; color: #888; letter-spacing: 0.4px; }
+.cf-row .cf-state.pending { color: #facc15; }
+.cf-row .cf-state.failed,
+.cf-row .cf-state.voided  { color: #f87171; opacity: 0.6; }
+.cf-row.dim { opacity: 0.5; }
+.cf-row-instant { color: #60a5fa; cursor: help; margin-left: 4px; }
+
+/* Intraday chart section — Lightweight Charts in the day modal */
+.ic-section {
+  margin: 0 0 14px;
+  background: #161922; border: 1px solid #232633;
+  border-radius: 8px; overflow: hidden;
+}
+.ic-section[open] { background: #1a1d27; }
+.ic-summary {
+  display: grid;
+  grid-template-columns: 14px 90px auto auto 1fr auto;
+  gap: 10px; align-items: center;
+  padding: 10px 14px; cursor: pointer;
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+  list-style: none; user-select: none;
+  transition: background 0.12s;
+}
+.ic-summary::-webkit-details-marker { display: none; }
+.ic-summary:hover { background: #20242f; }
+.ic-section[open] .ic-summary { border-bottom: 1px solid #2a2d3a; }
+.ic-section[open] .ic-caret { transform: rotate(90deg); }
+.ic-caret { color: #666; font-size: 10px; transition: transform 0.15s; display: inline-block; }
+.ic-summary-label {
+  color: #aaa; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.7px; font-weight: 600;
+}
+.ic-summary .ic-spy { font-weight: 600; font-size: 12px; }
+.ic-summary .ic-spy.pos { color: #4ade80; }
+.ic-summary .ic-spy.neg { color: #f87171; }
+.ic-summary .ic-spy.neu { color: #888; }
+.ic-summary .ic-vix { color: #aaa; font-size: 11.5px; }
+.ic-summary .ic-vix.elev { color: #facc15; }
+.ic-summary .ic-vix.high { color: #fb923c; }
+.ic-summary .ic-vix.crit { color: #f87171; }
+.ic-summary .ic-ohlc { color: #888; font-size: 11px; text-align: right; }
+.ic-summary .ic-ohlc strong { color: #ccc; font-weight: 500; }
+.ic-summary .ic-ohlc .sep { color: #444; margin: 0 6px; }
+
+/* Inline info icon — replaces the whole-row data-tip on the <details>. Hover
+   the ⓘ to see the explanation; rest of the summary stays click-to-toggle. */
+.ic-info, .cf-info {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: transparent; color: #555; font-size: 11px;
+  border: 1px solid #2a2d3a; cursor: help;
+  transition: all 0.12s; user-select: none;
+}
+.ic-info:hover, .cf-info:hover { background: #262938; color: #ddd; border-color: #3a3d4a; }
+
+.ic-body { padding: 8px 14px 14px; }
+.ic-toolbar {
+  display: flex; gap: 6px; align-items: center;
+  margin-bottom: 8px; padding-bottom: 8px;
+  border-bottom: 1px solid #232633;
+}
+.ic-toolbar .lbl {
+  font-size: 10px; color: #666; text-transform: uppercase;
+  letter-spacing: 0.8px; margin-right: 6px;
+}
+.ic-interval-chip {
+  padding: 3px 9px; border-radius: 5px; font-size: 11px;
+  cursor: pointer; background: transparent; color: #888;
+  border: 1px solid transparent; transition: all 0.12s;
+  font-weight: 600; letter-spacing: 0.3px; user-select: none;
+}
+.ic-interval-chip:hover { color: #ccc; background: #20242f; }
+.ic-interval-chip.active {
+  background: #262938; color: #fff; border-color: #3a3d4a;
+}
+.ic-fallback {
+  padding: 24px 14px; text-align: center;
+  color: #777; font-size: 12px; line-height: 1.7;
+}
+.ic-fallback .big { color: #ccc; font-size: 14px; display: block; margin-bottom: 6px; }
+.ic-fallback .ohlc {
+  display: inline-flex; gap: 14px; margin-top: 12px;
+  font-variant-numeric: tabular-nums; font-size: 12px; color: #aaa;
+}
+.ic-fallback .ohlc span strong { color: #fff; }
+.ic-chart-container {
+  position: relative;
+  height: 340px; width: 100%;
+}
+.ic-loading {
+  color: #666; font-size: 12px; padding: 30px; text-align: center;
+}
+
+/* Carried-into-next-session section (Option II: trades opened today, closing on a future date) */
+.carried-section {
+  background: rgba(250,204,21,0.05);
+  border: 1px solid rgba(250,204,21,0.22);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.carried-section h4 {
+  margin: 0 0 4px; color: #facc15; font-size: 12px;
+  text-transform: uppercase; letter-spacing: 0.7px; font-weight: 600;
+}
+.carried-note { font-size: 11px; color: #888; margin: 0 0 10px; }
+.carried-row {
+  display: grid;
+  grid-template-columns: 110px 50px 1fr 200px 70px;
+  gap: 12px; align-items: center;
+  padding: 7px 8px; font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  border-radius: 4px;
+  transition: background 0.12s;
+}
+.carried-row[role="button"] { cursor: pointer; }
+.carried-row[role="button"]:hover { background: rgba(250,204,21,0.08); }
+.carried-row[role="button"]:focus { outline: 2px solid rgba(250,204,21,0.5); outline-offset: -2px; }
+.carried-row + .carried-row { border-top: 1px solid rgba(250,204,21,0.1); }
+.carried-row .ct-contract { color: #fff; font-weight: 600; }
+.carried-row .ct-qty { color: #aaa; }
+.carried-row .ct-entry { color: #888; }
+.carried-row .ct-closes { color: #facc15; font-size: 11px; }
+.carried-row .pending-tag {
+  text-align: right; color: #facc15; font-size: 10px;
+  font-weight: 700; letter-spacing: 0.6px;
+  background: rgba(250,204,21,0.18); padding: 2px 8px;
+  border-radius: 4px;
+}
+/* Carried-FROM indicator for multi-day legs shown on their close date */
+.leg-summary .carried-from-tag {
+  display: inline-block; margin-left: 6px;
+  font-size: 10px; color: #facc15; letter-spacing: 0.4px;
+}
+.cal-meta-row .friction-est { color: #f87171; }
+.cal-meta-row .add-down { color: #f87171; }
+.cal-meta-row .add-up { color: #4ade80; }
+.cal-meta-row .add-flat { color: #888; }
+.cal-meta-row .meta-label { color: #666; margin-right: 4px; }
+.cal-meta-row .anomaly { color: #facc15; }
+
+/* Leg view */
+.leg-row {
+  background: #161922; border: 1px solid #232633; border-radius: 8px;
+  padding: 12px 14px; margin-bottom: 8px; cursor: pointer;
+  transition: background 0.12s;
+}
+.leg-row:hover { background: #1c2030; }
+.leg-row.expanded { background: #1c2030; }
+.leg-head {
+  display: grid;
+  /* leg-pl column bumped 90→120px to accommodate the inline "/ ±N%" addition. */
+  grid-template-columns: 18px minmax(140px, 180px) 1fr 120px 70px;
+  gap: 12px; align-items: center;
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+}
+.leg-caret { color: #555; font-size: 10px; transition: transform 0.12s; }
+.leg-row.expanded .leg-caret { transform: rotate(90deg); }
+.leg-contract { color: #fff; font-weight: 600; line-height: 1.4; }
+.leg-contract .qty-adds {
+  display: inline-block; margin-left: 6px; font-weight: 500;
+  font-size: 11.5px; color: #aaa;
+}
+.leg-contract .qty-adds .ad { margin-left: 4px; }
+.leg-contract .qty-adds .ad-down { color: #f87171; }
+.leg-contract .qty-adds .ad-up   { color: #4ade80; }
+.leg-contract .qty-adds .ad-flat { color: #888; }
+.leg-summary {
+  color: #999; font-size: 12px; line-height: 1.5;
+  /* Keep leg rows to a single line. With the multi-day tag now on the contract
+     line and atoms wrapping time/price pairs, overflow shouldn't happen on
+     normal data — but enforce it as a hard contract. */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.leg-summary .arrow { color: #555; margin: 0 4px; }
+.leg-summary .sep   { color: #3a3d4a; margin: 0 8px; font-weight: 400; }
+/* Atom spans wrap time/price pairs together so arrows never break mid-pair. */
+.leg-summary .atom  { display: inline-block; white-space: nowrap; }
+/* Multi-day tag now lives on the contract line, not the summary.
+   Yellow letterspacing, sits just after qty-adds. */
+.multi-day-tag {
+  display: inline-block; margin-left: 8px;
+  font-size: 10px; color: #facc15; letter-spacing: 0.4px;
+  vertical-align: 1px;
+}
+.leg-pl {
+  /* Stacked column so the % sub-stat can sit beneath the dollar amount when
+     used; for slash-inline %, the inner pct just renders inline. */
+  text-align: right; font-weight: 700; font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.leg-pl .leg-pl-pct {
+  font-size: 11px; font-weight: 600; opacity: 0.75; margin-left: 4px;
+}
+.leg-pl .leg-pl-pct::before { content: '/ '; color: #555; margin-right: 1px; }
+.leg-wl  { text-align: right; font-size: 10px; letter-spacing: 0.6px; }
+.leg-wl.WIN { color: #4ade80; } .leg-wl.LOSS { color: #f87171; } .leg-wl.BE { color: #888; }
+
+/* leg-meta: flex layout (huddle). Urgency-hold reserves a min-width so
+   urgency-tokens start at a consistent x-position across intraday rows.
+   dd-note pushed to the right edge via margin-left:auto. */
+.leg-meta {
+  display: flex;
+  gap: 14px; font-size: 10.5px;
+  color: #777; margin-top: 6px; padding-left: 30px;
+  align-items: baseline;
+}
+.leg-meta .urgency-hold { color: #aaa; min-width: 80px; }
+/* (old fixed-width rule deleted — superseded by flex layout above.) */
+.leg-meta .urgency-tokens { display: inline-flex; gap: 4px; align-items: baseline; }
+.leg-meta .band-token { font-weight: 500; }
+.leg-meta .band-token.low      { color: #4ade80; }
+.leg-meta .band-token.building { color: #facc15; }
+.leg-meta .band-token.heavy    { color: #fb923c; }
+.leg-meta .band-token.extreme  { color: #f87171; }
+.leg-meta .urgency-am   { color: #4ade80; }
+.leg-meta .urgency-mid  { color: #facc15; }
+.leg-meta .urgency-pm   { color: #fb923c; }
+.leg-meta .urgency-late { color: #f87171; }
+.leg-meta .dd-note { color: #888; font-style: italic; margin-left: auto; }
+.leg-meta .dd-note.neg { color: #f87171; opacity: 0.85; }
+
+.leg-events {
+  display: none; margin-top: 10px; padding-top: 10px;
+  border-top: 1px dashed #2a2d3a;
+}
+.leg-row.expanded .leg-events { display: block; }
+.leg-event {
+  display: grid;
+  grid-template-columns: 60px 18px 80px 1fr 90px;
+  gap: 10px; align-items: center;
+  padding: 4px 6px 4px 28px; font-size: 11.5px;
+  font-variant-numeric: tabular-nums; color: #aaa;
+  border-radius: 4px;
+}
+.leg-event:hover { background: rgba(255,255,255,0.025); }
+.leg-event .ev-time { color: #888; }
+.leg-event .ev-ico  { font-size: 12px; text-align: center; }
+.leg-event .ev-qty  { font-weight: 600; color: #ccc; }
+.leg-event .ev-note { color: #888; font-size: 11px; display: grid; grid-template-columns: 70px 1fr; gap: 8px; align-items: baseline; }
+.leg-event .ev-note .note-label { color: #aaa; }
+.leg-event .ev-note .note-detail { color: #777; }
+.leg-event .ev-pl   { text-align: right; font-weight: 600; }
+.leg-event.add-down .ev-ico { color: #f87171; }
+.leg-event.add-up   .ev-ico { color: #4ade80; }
+.leg-event.open  .ev-ico { color: #888; }
+.leg-event.close .ev-ico { color: #4ade80; }
+.leg-event.scale-out .ev-ico { color: #4ade80; opacity: 0.7; }
+.leg-event .pos { color: #4ade80; }
+.leg-event .neg { color: #f87171; }
+.leg-event .basis-tag {
+  font-size: 9.5px; color: #666; margin-left: 6px;
+}
+
+/* By contract / By hour bucket rows */
+.bucket-row {
+  display: grid;
+  grid-template-columns: 1fr 110px 120px 100px 70px;
+  gap: 12px; align-items: center;
+  padding: 11px 12px; border-radius: 6px;
+  background: #161922; border: 1px solid #232633;
+  margin-bottom: 6px;
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+}
+.bucket-row .bucket-name { color: #fff; font-weight: 600; }
+.bucket-row .bucket-meta { color: #888; font-size: 11.5px; }
+.bucket-row .bucket-pl { text-align: right; font-weight: 700; }
+.bucket-row .bucket-wr { text-align: right; font-size: 10.5px; color: #888; }
 </style>
 
 <h1>Trading Calendar & Habit Analysis</h1>
 <p class="sub" id="cal-sub">Loading...</p>
 
 <div class="cal-modal-bg" id="cal-modal-bg">
-  <div class="cal-modal" id="cal-modal"></div>
-</div>
-
-<div class="section">
-  <h2>Is It All From One Day?</h2>
-  <div id="concentration" style="background:#1a1d27;border-radius:12px;padding:22px;margin-bottom:16px"></div>
+  <div class="cal-modal-stage">
+    <button class="cal-nav-side left"  id="cal-nav-prev" aria-label="Previous active day (←)" type="button">◀</button>
+    <div class="cal-modal" id="cal-modal"></div>
+    <button class="cal-nav-side right" id="cal-nav-next" aria-label="Next active day (→)"     type="button">▶</button>
+  </div>
 </div>
 
 <div class="section">
   <h2>Daily P/L Calendar</h2>
+  <div class="cal-overlay-row" id="cal-overlay-row">
+    <span class="lbl">Overlays</span>
+    <button class="overlay-chip" data-overlay="spy"   data-tip="SPY day % change in each cell. Computed against the prior trading day's close.">SPY %</button>
+    <button class="overlay-chip" data-overlay="vix"   data-tip="VIX closing level in each cell. Color-coded: <strong>≤15 calm</strong>, <strong>15-20 normal</strong>, <strong>20-30 elevated</strong>, <strong>>30 high</strong>.">VIX</button>
+    <button class="overlay-chip" data-overlay="flows" data-tip="Cash flow corner icons (↓ deposit / ↑ withdrawal / ↔ internal). Toggle off to declutter.">Flows</button>
+  </div>
   <div class="cal-grid" id="calendar"></div>
-</div>
-
-<div class="section">
-  <h2>Habit Patterns</h2>
-  <div class="insight-grid" id="habits"></div>
 </div>
 
 <script>
 (async function() {
   const days = await apiFetch('/api/trades/daily');
   const allTrades = await apiFetch('/api/trades?symbol=SPY');
+  // Cash-flow events power day-cell flow indicators + the modal's Cash flow section.
+  // Endpoint is new; gracefully degrade if it 404s or errors (older deploys).
+  let cashFlowEvents = [];
+  try { cashFlowEvents = await apiFetch('/api/cash-flow/events'); } catch {}
+  const flowsByDate = (() => {
+    const m = new Map();
+    cashFlowEvents.forEach(e => {
+      const d = e.date;
+      if (!d) return;
+      if (!m.has(d)) m.set(d, []);
+      m.get(d).push(e);
+    });
+    return m;
+  })();
+
+  // SPY + VIX daily cache → per-date lookup. Empty if spy_daily.py hasn't run.
+  let spyDaily = { days: [] };
+  try { spyDaily = await apiFetch('/api/spy/daily'); } catch {}
+  const marketByDate = new Map((spyDaily.days || []).map(d => [d.date, d]));
+
+  // Overlay toggles — persisted to localStorage. All on by default.
+  const OVERLAY_KEY = 'cal-overlays';
+  const overlays = (() => {
+    try {
+      const raw = localStorage.getItem(OVERLAY_KEY);
+      if (raw) return { spy: true, vix: true, flows: true, ...JSON.parse(raw) };
+    } catch {}
+    return { spy: true, vix: true, flows: true };
+  })();
+  function persistOverlays() {
+    try { localStorage.setItem(OVERLAY_KEY, JSON.stringify(overlays)); } catch {}
+  }
+
+  // VIX color band — same thresholds used in tooltips
+  function vixBand(v) {
+    if (v == null) return '';
+    if (v <= 15) return '';        // calm — default dim
+    if (v <= 20) return 'elev';    // normal-elevated, yellow
+    if (v <= 30) return 'high';    // elevated, orange
+    return 'crit';                  // high, red
+  }
 
   if (!days.length) {
     document.getElementById('cal-sub').textContent = 'No data';
@@ -101,32 +587,6 @@
     days.length + ' trading days \u00b7 ' + totalTrades + ' trades \u00b7 ' + firstDate + ' \u2013 ' + lastDate;
 
   const plStr = v => v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString();
-
-  // --- Profit Concentration ---
-  const totalPL = days.reduce((s, d) => s + d.pl, 0);
-  const sorted = [...days].sort((a, b) => b.pl - a.pl);
-  const withoutBest = totalPL - sorted[0].pl;
-  const withoutTop3 = totalPL - sorted.slice(0, 3).reduce((s, d) => s + d.pl, 0);
-  const withoutTop5 = totalPL - sorted.slice(0, 5).reduce((s, d) => s + d.pl, 0);
-  const maxAbs = Math.max(Math.abs(totalPL), Math.abs(withoutBest), Math.abs(withoutTop3), Math.abs(withoutTop5));
-
-  function barRow(label, val) {
-    const pct = maxAbs > 0 ? Math.max(Math.abs(val) / maxAbs * 100, 2) : 2;
-    const cls = val >= 0 ? 'bar-pos' : 'bar-neg';
-    return `<div class="bar-row">
-      <div class="bar-label">${label}</div>
-      <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%">${plStr(val)}</div></div>
-    </div>`;
-  }
-
-  const concEl = document.getElementById('concentration');
-  concEl.innerHTML =
-    '<p style="font-size:14px;color:#ccc;margin-bottom:16px">What happens when you remove your best days:</p>' +
-    barRow('All ' + days.length + ' days', totalPL) +
-    barRow('Remove best day', withoutBest) +
-    barRow('Remove top 3 days', withoutTop3) +
-    barRow('Remove top 5 days', withoutTop5) +
-    `<p style="font-size:12px;color:#777;margin-top:14px">Without your best day (${plStr(sorted[0].pl)} on ${sorted[0].date}), you'd be at ${plStr(withoutBest)}.</p>`;
 
   // --- Calendar (single browsable month) ---
   const lookup = {};
@@ -145,11 +605,24 @@
     return '';
   }
 
-  // Collect months with trades
+  // Collect months the calendar should be navigable to. Includes:
+  //   • months with at least one trade (entry or exit date)
+  //   • months with at least one COMPLETED cash-flow event (deposit / withdrawal /
+  //     internal / paid dividend / gold fee / referral grant)
+  // Deliberately excludes pending-state events so future scheduled deposits /
+  // future-dated dividend pays don't pad the calendar with empty months.
+  // Cash-flow-only months exist only here (not in `days` or `/api/trades/daily`),
+  // so they don't leak into Analysis, Pre-Trade, Trade Log, or Portfolio views.
   const monthSet = new Set();
-  days.forEach(d => {
-    const [yr, mo] = d.date.split('-');
-    monthSet.add(parseInt(yr) + '-' + parseInt(mo));
+  const addMonth = (dateStr) => {
+    if (!dateStr) return;
+    const [yr, mo] = dateStr.split('-');
+    if (yr && mo) monthSet.add(parseInt(yr, 10) + '-' + parseInt(mo, 10));
+  };
+  days.forEach(d => addMonth(d.date));
+  cashFlowEvents.forEach(e => {
+    if (['pending', 'failed', 'voided', 'scheduled'].includes(e.state)) return;
+    addMonth(e.date);
   });
   const monthsWithTrades = [...monthSet].sort().map(s => {
     const [yr, mo] = s.split('-');
@@ -202,21 +675,66 @@
       const dateStr = `${yr}-${String(mo + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
       const data = lookup[dateStr];
       const dow = new Date(yr, mo, d).getDay();
+      // Cash-flow icon badge (independent of trade presence; respects fail/void by greying).
+      // Suppressed when the Flows overlay is toggled off.
+      const flows = flowsByDate.get(dateStr) || [];
+      const flowIcons = (() => {
+        if (!flows.length || !overlays.flows) return '';
+        const live = flows.filter(e => !['failed', 'voided'].includes(e.state));
+        const hasDeposit    = live.some(e => e.kind === 'deposit');
+        const hasWithdrawal = live.some(e => e.kind === 'withdrawal');
+        const hasInternal   = live.some(e => e.kind === 'internal');
+        const hasPending    = live.some(e => e.state === 'pending');
+        const pendCls = hasPending ? ' fi-pending' : '';
+        const parts = [];
+        if (hasDeposit)    parts.push(`<span class="fi-deposit${pendCls}">\u2193</span>`);
+        if (hasWithdrawal) parts.push(`<span class="fi-withdrawal${pendCls}">\u2191</span>`);
+        if (hasInternal)   parts.push(`<span class="fi-internal">\u2194</span>`);
+        return parts.length ? `<div class="flow-icons">${parts.join('')}</div>` : '';
+      })();
+
+      // SPY % + VIX overlay block (rendered on every cell that has market data,
+      // regardless of trade presence). Toggles independently via overlays.spy / .vix.
+      const market = marketByDate.get(dateStr);
+      const ctx = (() => {
+        if (!market) return '';
+        const parts = [];
+        if (overlays.spy && market.spy_pct != null) {
+          const cls = market.spy_pct > 0.05 ? 'pos' : market.spy_pct < -0.05 ? 'neg' : 'neu';
+          const sign = market.spy_pct > 0 ? '+' : '';
+          parts.push(`<span class="spy ${cls}">${sign}${market.spy_pct.toFixed(2)}%</span>`);
+        }
+        if (overlays.vix && market.vix_close != null) {
+          parts.push(`<span class="vix ${vixBand(market.vix_close)}">VIX ${market.vix_close.toFixed(1)}</span>`);
+        }
+        return parts.length ? `<div class="ctx">${parts.join('')}</div>` : '';
+      })();
 
       if (!data || dow === 0 || dow === 6) {
-        html += `<div class="day-cell no-trade"><div class="date">${d}</div></div>`;
+        // No-trade cell \u2014 still surface flows + market context if available.
+        // Make clickable when there's anything to show in the modal.
+        const clickable = (flows.length || market) ? ` has-trades" data-date="${dateStr}` : '';
+        html += `<div class="day-cell no-trade${clickable}"><div class="date">${d}</div>${flowIcons}${ctx}</div>`;
       } else {
         const plColor = data.pl >= 0 ? 'g' : 'r';
+        // Prefer the freshly-fetched daily VIX from the spy_daily cache; fall back to
+        // the per-trade VIX (which could be stale or missing on edge-case days).
+        const vixDisplay = (market && market.vix_close != null) ? market.vix_close.toFixed(1)
+                          : (data.vix != null ? data.vix : '\u2014');
+        const spyTipLine = (market && market.spy_pct != null)
+          ? `SPY: ${market.spy_pct >= 0 ? '+' : ''}${market.spy_pct.toFixed(2)}% (close $${(market.spy_close || 0).toFixed(2)})<br>` : '';
         html += `<div class="day-cell has-trades ${getClass(data.pl)}" data-date="${dateStr}">
           <div class="date">${d}</div>
           <div class="pl ${plColor}">${data.pl >= 0 ? '+' : ''}${data.pl}</div>
           <div class="trades">${data.num_trades}t ${data.wins}w</div>
+          ${ctx}
+          ${flowIcons}
           <div class="tip">
             <strong>${dateStr}</strong><br>
             P/L: <span class="${plColor}">${plStr(data.pl)}</span><br>
             Trades: ${data.num_trades} &middot; Wins: ${data.wins}/${data.num_trades}<br>
             Cumulative: ${plStr(data.cumulative_pl)}<br>
-            VIX: ${data.vix || '\u2014'}
+            ${spyTipLine}VIX: ${vixDisplay}${flows.length ? `<br>Cash flow: ${flows.length} event${flows.length > 1 ? 's' : ''}` : ''}
           </div>
         </div>`;
       }
@@ -247,9 +765,131 @@
   const modalBg = document.getElementById('cal-modal-bg');
   const modalEl = document.getElementById('cal-modal');
 
-  function closeModal() { modalBg.classList.remove('open'); }
+  // Module-level chart handle so close/escape always cleans up the active chart,
+  // regardless of which paint() rewrote the innerHTML last.
+  let activeChart = null;
+  function destroyActiveChart() {
+    try { activeChart && activeChart.remove(); } catch {}
+    activeChart = null;
+  }
+  // Active-day navigation — union of dates with anything modal-worthy:
+  //   • a trade entry or exit  • a cash-flow event  • a carried-out position
+  // Sorted ascending; used by arrow keys + side nav buttons.
+  const activeDates = (() => {
+    const s = new Set();
+    allTrades.forEach(t => {
+      if (t.date) s.add(t.date);
+      if (t.exit_date) s.add(t.exit_date);
+    });
+    cashFlowEvents.forEach(e => { if (e.date) s.add(e.date); });
+    return [...s].sort();
+  })();
+  let currentModalDate = null;
+  const prevActiveDate = (d) => {
+    const i = activeDates.indexOf(d);
+    return i > 0 ? activeDates[i - 1] : null;
+  };
+  const nextActiveDate = (d) => {
+    const i = activeDates.indexOf(d);
+    return (i >= 0 && i < activeDates.length - 1) ? activeDates[i + 1] : null;
+  };
+  // When nav crosses a month boundary, hop the calendar grid behind the modal
+  // so closing it lands the user on the right month.
+  function syncMonthForDate(dateStr) {
+    const wantKey = dateStr.slice(0, 7);
+    const idx = monthsWithTrades.findIndex(([yr, mo]) =>
+      `${yr}-${String(mo + 1).padStart(2, '0')}` === wantKey);
+    if (idx >= 0 && idx !== currentMonthIdx) {
+      currentMonthIdx = idx;
+      renderMonth();
+    }
+  }
+  function navigateToDate(newDate) {
+    if (!newDate) return;
+    syncMonthForDate(newDate);
+    openDayModal(newDate);
+  }
+
+  function closeModal() {
+    modalBg.classList.remove('open'); hideTip(); destroyActiveChart();
+    currentModalDate = null;
+  }
   modalBg.addEventListener('click', (e) => { if (e.target === modalBg) closeModal(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+  // Arrow-key navigation across active days. Remove any prior listener from
+  // an earlier IIFE run (user navigated away from Calendar and back) so they
+  // don't stack and reference stale closures.
+  if (window.__calArrowNavListener) {
+    document.removeEventListener('keydown', window.__calArrowNavListener);
+  }
+  window.__calArrowNavListener = (e) => {
+    if (!modalBg.classList.contains('open')) return;
+    if (!currentModalDate) return;
+    const a = document.activeElement;
+    if (a && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable)) return;
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); navigateToDate(prevActiveDate(currentModalDate)); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); navigateToDate(nextActiveDate(currentModalDate)); }
+  };
+  document.addEventListener('keydown', window.__calArrowNavListener);
+
+  // Side nav buttons — wired once (HTML is static, lives outside the modal
+  // re-paint). Disabled state is updated each modal open in openDayModal.
+  const navPrevBtn = document.getElementById('cal-nav-prev');
+  const navNextBtn = document.getElementById('cal-nav-next');
+  if (navPrevBtn) navPrevBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (currentModalDate) navigateToDate(prevActiveDate(currentModalDate));
+  });
+  if (navNextBtn) navNextBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (currentModalDate) navigateToDate(nextActiveDate(currentModalDate));
+  });
+
+  // --- Custom tooltip ---
+  let tipEl = document.getElementById('cal-tip');
+  if (!tipEl) {
+    tipEl = document.createElement('div');
+    tipEl.id = 'cal-tip';
+    tipEl.className = 'cal-tip';
+    document.body.appendChild(tipEl);
+  }
+  // Reset stale state from a prior calendar load (e.g. user navigated away while a tip was visible).
+  tipEl.classList.remove('open');
+
+  // One-time global guard: if the cursor is over anything that's NOT a [data-tip] trigger, hide.
+  // Covers nav-away-while-hovering (the trigger gets removed without firing mouseleave), modal close
+  // mid-hover, and any other case where the natural mouseleave never reaches us.
+  if (!window.__calTipGuardInstalled) {
+    window.__calTipGuardInstalled = true;
+    document.addEventListener('pointerover', (e) => {
+      const tip = document.getElementById('cal-tip');
+      if (tip && !e.target.closest('[data-tip]')) tip.classList.remove('open');
+    });
+  }
+  function showTip(target) {
+    const html = target.dataset.tip;
+    if (!html) return;
+    tipEl.innerHTML = html;
+    // Force reflow so we can measure
+    tipEl.style.top = '0px'; tipEl.style.left = '0px';
+    const r = target.getBoundingClientRect();
+    const tipR = tipEl.getBoundingClientRect();
+    let top = r.bottom + 8;
+    let left = r.left + r.width / 2 - tipR.width / 2;
+    if (top + tipR.height > window.innerHeight - 10) top = r.top - tipR.height - 8;
+    left = Math.max(10, Math.min(left, window.innerWidth - tipR.width - 10));
+    tipEl.style.top = `${top}px`;
+    tipEl.style.left = `${left}px`;
+    tipEl.classList.add('open');
+  }
+  function hideTip() { tipEl.classList.remove('open'); }
+  function bindTips(root) {
+    root.querySelectorAll('[data-tip]').forEach(el => {
+      el.addEventListener('mouseenter', () => showTip(el));
+      el.addEventListener('mouseleave', hideTip);
+    });
+  }
 
   const fmtTime = (t) => {
     if (!t) return '—';
@@ -259,11 +899,455 @@
   const fmtPL = (v) => v == null ? '—' : (v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString());
   const fmtPrice = (n) => n == null ? '—' : '$' + n.toFixed(2);
 
+  // ---------- Helpers shared by all views ----------
+  const typeAbbr = (t) => t === 'Call' ? 'C' : t === 'Put' ? 'P' : '?';
+  const groupKey = (t) => t.group_id || `${t.entry_time}-${t.strike}-${t.type}`;
+  const contractKey = (t) => `${t.strike}-${t.type}`;
+
+  // Time-of-day urgency class for theta pressure (0DTE specific)
+  function urgencyClass(hour) {
+    if (hour == null) return '';
+    if (hour < 11) return 'urgency-am';
+    if (hour < 13) return 'urgency-mid';
+    if (hour < 15) return 'urgency-pm';
+    return 'urgency-late';
+  }
+  function urgencyLabel(hour) {
+    if (hour == null) return '';
+    if (hour < 11) return 'morning · low theta';
+    if (hour < 13) return 'midday · theta building';
+    if (hour < 15) return 'afternoon · theta heavy';
+    return 'late · theta extreme';
+  }
+
+  // Friction estimate: 0DTE ATM SPY spread is typically ~$0.02-$0.05/contract.
+  // Each round trip pays the spread on entry + exit. Assume $0.03/contract/leg ≈ $6/contract round trip.
+  const FRICTION_PER_CONTRACT_RT = 6; // $
+  function frictionEstimate(totalContracts) {
+    return Math.round(totalContracts * FRICTION_PER_CONTRACT_RT);
+  }
+  // Robinhood contract fees: ~$0.04 per contract per side (ORF + clearing).
+  // Exact, deterministic — not an estimate like friction.
+  const FEE_PER_CONTRACT_SIDE = 0.04;
+  function feeExact(totalContracts) {
+    return +(totalContracts * FEE_PER_CONTRACT_SIDE * 2).toFixed(2);
+  }
+
+  // ---------- Leg detection ----------
+  // A leg = continuous holding period for one (strike, type), bounded by going flat.
+  // Walks chronological events (one open per group_id + N closes), splits on flatlines.
+  // Same-price opens within OPEN_MERGE_SECS are treated as broker-fragmented opening
+  // executions (not real adds) and merged into the previous open/add event.
+  const OPEN_MERGE_SECS = 60;
+  function secsBetween(t1, t2) {
+    const toS = (t) => { const m = String(t).match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/); return m ? (+m[1])*3600 + (+m[2])*60 + (m[3] ? +m[3] : 0) : 0; };
+    return Math.abs(toS(t2) - toS(t1));
+  }
+  function timeToSecs(t) {
+    const m = String(t || '').match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    return m ? (+m[1])*3600 + (+m[2])*60 + (m[3] ? +m[3] : 0) : 0;
+  }
+  function addDaysISO(dateStr, days) {
+    const d = new Date(dateStr + 'T12:00:00');
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+  }
+  // For a trade row, compute full ISO datetimes for entry + exit. If exit_time
+  // lexically precedes entry_time, the close happened on a later calendar day —
+  // use hold_time_min to figure out how many days later.
+  function fullDatetimes(t) {
+    const entryISO = `${t.date}T${(t.entry_time || '00:00:00').padStart(8, '0')}`;
+    let exitDate = t.date;
+    if (t.exit_time && t.entry_time && timeToSecs(t.exit_time) < timeToSecs(t.entry_time)) {
+      // Crossed midnight. Derive day delta from hold_time_min if available.
+      const holdMin = t.hold_time_min || 0;
+      const daysDelta = Math.max(1, Math.ceil(holdMin / (24 * 60)));
+      exitDate = addDaysISO(t.date, daysDelta);
+    } else if (t.hold_time_min && t.hold_time_min > 24 * 60) {
+      // Multi-day even though exit_time > entry_time numerically
+      exitDate = addDaysISO(t.date, Math.floor(t.hold_time_min / (24 * 60)));
+    }
+    const exitISO = `${exitDate}T${(t.exit_time || '00:00:00').padStart(8, '0')}`;
+    return { entryISO, exitISO, exitDate, multiDay: exitDate !== t.date };
+  }
+
+  function buildLegs(trades) {
+    const result = { legs: [], anomalies: 0 };
+    if (!trades.length) return result;
+    // 1. Group rows by group_id
+    const groups = new Map();
+    trades.forEach(t => {
+      const g = groupKey(t);
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(t);
+    });
+
+    // 2. For each (strike, type), build chronological event list. Skip groups with totalQty===0.
+    const byContract = new Map();
+    groups.forEach((rows) => {
+      const first = rows[0];
+      const ck = contractKey(first);
+      const totalQty = rows.reduce((s, r) => s + (r.qty || 0), 0);
+      if (totalQty === 0) { result.anomalies += rows.length; return; }
+      const totalEntryCost = rows.reduce((s, r) => s + Math.abs(r.entry_cost || 0), 0);
+      const openPx = totalQty ? totalEntryCost / (totalQty * 100) : 0;
+
+      if (!byContract.has(ck)) byContract.set(ck, []);
+      const evs = byContract.get(ck);
+      // Use full datetime (constructed from t.date + entry_time / exit_time, with
+      // overnight detection via hold_time_min) so multi-day positions sort correctly.
+      const dtFirst = fullDatetimes(first);
+      evs.push({
+        time: first.entry_time, datetime: dtFirst.entryISO, date: first.date,
+        strike: first.strike, type: first.type,
+        kind: 'open', qty: totalQty, price: openPx, gid: groupKey(first), pl: 0,
+        dte: first.dte,
+      });
+      rows.forEach(r => {
+        if (!(r.qty > 0)) return;
+        const xPx = (r.exit_credit || 0) / (r.qty * 100);
+        const dtR = fullDatetimes(r);
+        evs.push({
+          time: r.exit_time, datetime: dtR.exitISO, date: dtR.exitDate,
+          strike: r.strike, type: r.type,
+          kind: 'close', qty: r.qty, price: xPx, gid: groupKey(r), pl: r.pl || 0,
+        });
+      });
+    });
+
+    // 3. For each contract: sort events by full datetime, split into legs at flatlines.
+    //    Merge same-price opens within OPEN_MERGE_SECS into the previous open/add.
+    byContract.forEach((events, ck) => {
+      events.sort((a, b) => (a.datetime || '').localeCompare(b.datetime || ''));
+      const [strikeStr, type] = [ck.split('-')[0], ck.split('-')[1]];
+      const strike = parseFloat(strikeStr);
+      let leg = null;
+      let netQty = 0;
+
+      events.forEach(e => {
+        if (!leg) {
+          leg = {
+            strike, type, events: [],
+            startTime: e.time, endTime: e.time,
+            startDate: e.date, endDate: e.date,
+            startDatetime: e.datetime, endDatetime: e.datetime,
+            totalOpened: 0, totalClosed: 0,
+            totalEntryCost: 0, totalExitCredit: 0,
+            pl: 0, addsDown: 0, addsUp: 0, addsFlat: 0,
+          };
+        }
+        const ev = { ...e };
+
+        if (e.kind === 'open') {
+          if (netQty > 0 && leg.totalOpened > 0) {
+            const basis = leg.totalEntryCost / (leg.totalOpened * 100);
+            const lastOpenLike = [...leg.events].reverse().find(x => x.kind === 'open' || x.kind === 'add');
+            const samePrice = Math.abs(e.price - basis) < 0.005;
+            const dtDelta = lastOpenLike ? Math.abs((new Date(e.datetime) - new Date(lastOpenLike.datetime)) / 1000) : Infinity;
+            const closeInTime = lastOpenLike && dtDelta <= OPEN_MERGE_SECS;
+
+            if (samePrice && closeInTime) {
+              // Broker-fragmented open: merge into previous open/add. No new event row.
+              lastOpenLike.qty += e.qty;
+              lastOpenLike._fills = (lastOpenLike._fills || 1) + 1;
+              lastOpenLike.time = e.time;
+              lastOpenLike.datetime = e.datetime;
+              leg.totalOpened += e.qty;
+              leg.totalEntryCost += e.price * e.qty * 100;
+              netQty += e.qty;
+              leg.endTime = e.time; leg.endDate = e.date; leg.endDatetime = e.datetime;
+              return;
+            }
+
+            ev.kind = 'add';
+            ev.basisBefore = basis;
+            if (e.price < basis - 0.005) { ev.direction = 'avg-down'; leg.addsDown++; }
+            else if (e.price > basis + 0.005) { ev.direction = 'avg-up'; leg.addsUp++; }
+            else { ev.direction = 'flat'; leg.addsFlat++; }
+          }
+          leg.totalOpened += e.qty;
+          leg.totalEntryCost += e.price * e.qty * 100;
+          netQty += e.qty;
+        } else {
+          leg.totalClosed += e.qty;
+          leg.totalExitCredit += e.price * e.qty * 100;
+          leg.pl += e.pl;
+          netQty -= e.qty;
+        }
+        leg.events.push(ev);
+        leg.endTime = e.time; leg.endDate = e.date; leg.endDatetime = e.datetime;
+
+        if (netQty <= 0) { result.legs.push(leg); leg = null; netQty = 0; }
+      });
+      if (leg) result.legs.push(leg);
+    });
+
+    // 4. Merge consecutive same-price closes within OPEN_MERGE_SECS (mirrors open-merge),
+    //    then annotate scale-out vs final close + profit/loss flavor.
+    result.legs.forEach(l => {
+      const merged = [];
+      l.events.forEach(e => {
+        const last = merged[merged.length - 1];
+        const dtDelta = last ? Math.abs((new Date(e.datetime) - new Date(last.datetime)) / 1000) : Infinity;
+        if (last && e.kind === 'close' && last.kind === 'close' &&
+            Math.abs(e.price - last.price) < 0.005 &&
+            dtDelta <= OPEN_MERGE_SECS) {
+          last.qty += e.qty;
+          last.pl  += e.pl;
+          last._fills = (last._fills || 1) + 1;
+          last.time = e.time;
+          last.datetime = e.datetime;
+        } else {
+          merged.push({ ...e });
+        }
+      });
+      l.events = merged;
+
+      let n = 0;
+      l.events.forEach(e => {
+        if (e.kind === 'open' || e.kind === 'add') { n += e.qty; }
+        else {
+          n -= e.qty;
+          e.kind = n > 0 ? 'scale-out' : 'close';
+          if (e.pl > 0)      e.outcome = 'profit';
+          else if (e.pl < 0) e.outcome = 'loss';
+          else               e.outcome = 'flat';
+        }
+      });
+      l.avgEntry = l.totalOpened ? l.totalEntryCost / (l.totalOpened * 100) : 0;
+      l.avgExit  = l.totalClosed ? l.totalExitCredit / (l.totalClosed * 100) : 0;
+      l.holdMin = (l.startDatetime && l.endDatetime)
+        ? Math.round((new Date(l.endDatetime) - new Date(l.startDatetime)) / 60000)
+        : null;
+      l.multiDay = l.startDate !== l.endDate;
+      // DTE-at-entry for non-intraday legs (used by the auto-adapt annotation logic).
+      // Falls back to null if the source trade row didn't have a DTE column.
+      const firstOpen = l.events.find(e => e.kind === 'open' || e.kind === 'add');
+      l.dteAtEntry = firstOpen && firstOpen.dte != null ? firstOpen.dte : null;
+      // "Intraday" here means held within a single trading session (≤ 6.5 hours, single date).
+      // Theta-urgency-by-hour and morning/afternoon framing only apply to intraday legs.
+      l.intraday = !l.multiDay && (l.holdMin == null || l.holdMin <= 390);
+      l.entryHour = (() => { const m = String(l.startTime || '').match(/(\d{1,2}):/); return m ? +m[1] : null; })();
+      l.exitHour  = (() => { const m = String(l.endTime  || '').match(/(\d{1,2}):/); return m ? +m[1] : null; })();
+    });
+
+    result.legs.sort((a, b) => (a.startDatetime || '').localeCompare(b.startDatetime || ''));
+    return result;
+  }
+
+  // Hold-time formatter: m / h / d
+  function fmtHold(min) {
+    if (min == null) return '—';
+    if (min < 60) return min + 'm';
+    if (min < 24 * 60) {
+      const h = Math.floor(min / 60), m = min % 60;
+      return m ? `${h}h ${m}m` : `${h}h`;
+    }
+    const d = Math.floor(min / (24 * 60));
+    const h = Math.floor((min - d * 24 * 60) / 60);
+    return h ? `${d}d ${h}h` : `${d}d`;
+  }
+  // Short date for cross-day display: "5/7"
+  function fmtShortDate(iso) {
+    if (!iso) return '';
+    const [y, m, d] = iso.split('-');
+    return `${parseInt(m)}/${parseInt(d)}`;
+  }
+
+  // ---------- Drawdown timeline ----------
+  // Running cumulative P/L through the day, indexed by exit_time. Each leg's
+  // dd-context = cumulative right after the leg's last close.
+  function buildDrawdownTimeline(trades) {
+    const sorted = [...trades].sort((a, b) => (a.exit_time || '').localeCompare(b.exit_time || ''));
+    const tl = [];
+    let cum = 0, lo = 0;
+    sorted.forEach(t => {
+      cum += (t.pl || 0);
+      if (cum < lo) lo = cum;
+      tl.push({ time: t.exit_time, cum, lowSoFar: lo });
+    });
+    return tl;
+  }
+  function ddAtTime(timeline, time) {
+    if (!timeline.length || !time) return null;
+    let last = null;
+    for (const p of timeline) {
+      if ((p.time || '') <= time) last = p; else break;
+    }
+    return last;
+  }
+
+  // ---------- View toggle state ----------
+  const VIEW_KEY = 'cal-modal-view';
+  const VIEW_DEFAULT = 'legs';
+  const VIEW_MODES = [
+    { id: 'legs',       label: 'Legs' },
+    { id: 'roundtrips', label: 'Roundtrips' },
+    { id: 'fills',      label: 'Fills' },
+    { id: 'contract',   label: 'By contract' },
+    { id: 'hour',       label: 'By hour' },
+  ];
+  function getViewMode() {
+    try { return localStorage.getItem(VIEW_KEY) || VIEW_DEFAULT; } catch { return VIEW_DEFAULT; }
+  }
+  function setViewMode(m) {
+    try { localStorage.setItem(VIEW_KEY, m); } catch {}
+  }
+
+  // ---------- Intraday-chart helpers (Step 4: Lightweight Charts in day modal) ----------
+
+  // Tiny localStorage helpers — boolean prefs only. Keep keys in one place.
+  function readPref(key, fallback) {
+    try {
+      const v = localStorage.getItem(key);
+      if (v === null) return fallback;
+      return v === '1' || v === 'true';
+    } catch { return fallback; }
+  }
+  function writePref(key, val) {
+    try { localStorage.setItem(key, val ? '1' : '0'); } catch {}
+  }
+
+  // ET-aware session helpers. Uses Intl with America/New_York to avoid hardcoding
+  // DST boundaries. NYSE/Arca sessions:
+  //   premarket  04:00 – 09:30 ET
+  //   regular    09:30 – 16:00 ET
+  //   postmarket 16:00 – 20:00 ET
+  function _etMinutes(unixSec) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(new Date(unixSec * 1000));
+    const h = parseInt(parts.find(p => p.type === 'hour').value, 10);
+    const m = parseInt(parts.find(p => p.type === 'minute').value, 10);
+    return h * 60 + m;
+  }
+  function isPremarket(unixSec)  { return _etMinutes(unixSec) < 9 * 60 + 30; }
+  function isPostmarket(unixSec) { return _etMinutes(unixSec) >= 16 * 60; }
+  function isExtendedHours(unixSec) { return isPremarket(unixSec) || isPostmarket(unixSec); }
+
+  // ET formatters for the chart axis + crosshair tooltip. Lightweight Charts displays
+  // in browser-local timezone by default — we force ET so the chart matches Robinhood's
+  // own display regardless of where the user is sitting.
+  function fmtETClock(unixSec) {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(new Date(unixSec * 1000));
+  }
+  function fmtETDateTime(unixSec) {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(new Date(unixSec * 1000));
+  }
+
+  // Aggregate 5m bars to N-minute bars (factor = N/5). Boundary-aligned to bar timestamps;
+  // both 10m and 15m align cleanly because both fit a whole number of 5m bars.
+  function aggregateBars(bars, intervalMin) {
+    const factor = Math.max(1, Math.round(intervalMin / 5));
+    if (factor === 1) return bars.slice();
+    const out = [];
+    for (let i = 0; i < bars.length; i += factor) {
+      const chunk = bars.slice(i, i + factor);
+      if (!chunk.length) continue;
+      out.push({
+        t: chunk[0].t,
+        o: chunk[0].o,
+        h: Math.max(...chunk.map(b => b.h)),
+        l: Math.min(...chunk.map(b => b.l)),
+        c: chunk[chunk.length - 1].c,
+        v: chunk.reduce((s, b) => s + (b.v || 0), 0),
+      });
+    }
+    return out;
+  }
+
+  // Parse "HH:MM:SS" entry/exit time on a given YYYY-MM-DD (ET) → Unix seconds (UTC).
+  function etTimeToUnix(dateStr, hhmmss) {
+    if (!dateStr || !hhmmss) return null;
+    const m = String(hhmmss).match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (!m) return null;
+    const hh = m[1].padStart(2, '0'), mm = m[2], ss = (m[3] || '00');
+    // Build an ET-local datetime string then derive UTC via the offset for that date.
+    // Trick: construct the date in UTC by computing the ET offset on a probe date.
+    const probe = new Date(`${dateStr}T12:00:00Z`);
+    const etProbe = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', hour: '2-digit', hour12: false,
+    }).formatToParts(probe).find(p => p.type === 'hour').value;
+    // UTC noon (12) minus the ET-rendered hour = ET offset behind UTC (in hours).
+    const offsetHours = 12 - parseInt(etProbe, 10);
+    const ms = Date.UTC(
+      parseInt(dateStr.slice(0, 4), 10),
+      parseInt(dateStr.slice(5, 7), 10) - 1,
+      parseInt(dateStr.slice(8, 10), 10),
+      parseInt(hh, 10) + offsetHours, parseInt(mm, 10), parseInt(ss, 10),
+    );
+    return Math.floor(ms / 1000);
+  }
+
+  // Snap a trade's unix timestamp to the nearest aggregated bar start so the marker
+  // sits exactly on a candle and Lightweight Charts can render it without drift.
+  function snapToBar(unixSec, intervalMin) {
+    const stepSec = intervalMin * 60;
+    return Math.floor(unixSec / stepSec) * stepSec;
+  }
+
+  // Build marker objects for each trade's entry and exit. Color = outcome (win/loss/BE).
+  // Multiple trades sharing the same bar-aligned timestamp would clobber each other in
+  // setMarkers, so we group by (time, kind) and label with the count when > 1.
+  function computeTradeMarkers(trades, dateStr, intervalMin) {
+    const buckets = new Map();
+    trades.forEach(t => {
+      const entrySec = etTimeToUnix(dateStr, t.entry_time);
+      const exitSec  = etTimeToUnix(t.exit_date || dateStr, t.exit_time);
+      if (entrySec != null) {
+        const k = `${snapToBar(entrySec, intervalMin)}:entry`;
+        if (!buckets.has(k)) buckets.set(k, { time: snapToBar(entrySec, intervalMin), kind: 'entry', trades: [] });
+        buckets.get(k).trades.push(t);
+      }
+      if (exitSec != null) {
+        const k = `${snapToBar(exitSec, intervalMin)}:exit`;
+        if (!buckets.has(k)) buckets.set(k, { time: snapToBar(exitSec, intervalMin), kind: 'exit', trades: [] });
+        buckets.get(k).trades.push(t);
+      }
+    });
+    return [...buckets.values()].map(b => {
+      const totalPl = b.trades.reduce((s, t) => s + (t.pl || 0), 0);
+      const color = totalPl > 0 ? '#4ade80' : totalPl < 0 ? '#f87171' : '#888';
+      const typeChar = b.trades[0].type === 'Call' ? 'C' : b.trades[0].type === 'Put' ? 'P' : '?';
+      const strike = b.trades[0].strike;
+      const text = b.trades.length === 1
+        ? (b.kind === 'entry' ? `↑ ${strike}${typeChar}` : `↓ ${strike}${typeChar}`)
+        : `${b.trades.length}×`;
+      return {
+        time: b.time,
+        position: b.kind === 'entry' ? 'belowBar' : 'aboveBar',
+        color, shape: b.kind === 'entry' ? 'arrowUp' : 'arrowDown',
+        text,
+      };
+    }).sort((a, b) => a.time - b.time);
+  }
+
+  // ---------- Modal renderer ----------
+  // Module-level cache so re-opening the same modal doesn't re-fetch.
+  const intradayCache = new Map();
+
   function openDayModal(dateStr) {
+    currentModalDate = dateStr;
+    // Sync side-nav button enabled/disabled state for the new date.
+    if (navPrevBtn) navPrevBtn.disabled = !prevActiveDate(dateStr);
+    if (navNextBtn) navNextBtn.disabled = !nextActiveDate(dateStr);
     const dayData = lookup[dateStr];
-    const dayTrades = allTrades.filter(t => t.date === dateStr)
+    // Option II: trades attributed to their CLOSE date. Multi-day positions appear
+    // in the modal of the day they were closed, not the day they were opened.
+    const dayTrades = allTrades.filter(t => (t.exit_date || t.date) === dateStr)
       .sort((a, b) => (a.entry_time || '').localeCompare(b.entry_time || '')
                      || (a.exit_time || '').localeCompare(b.exit_time || ''));
+    // Trades OPENED today but closing on a later date — shown as a separate
+    // "Open positions carried into next session" section so the entry day still
+    // surfaces what was put on, just without realized P/L attribution.
+    const carriedOutTrades = allTrades.filter(t =>
+      t.date === dateStr && t.exit_date && t.exit_date !== dateStr
+    ).sort((a, b) => (a.entry_time || '').localeCompare(b.entry_time || ''));
 
     const dt = new Date(dateStr + 'T12:00:00');
     const dowName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][dt.getDay()];
@@ -271,7 +1355,7 @@
     const plClass = dayData && dayData.pl >= 0 ? 'g' : 'r';
     const totalQty = dayTrades.reduce((s, t) => s + (t.qty || 0), 0);
 
-    // Win rate (excluding break-even)
+    // Win rate (excluding BE)
     const wins = dayTrades.filter(t => t.wl === 'WIN').length;
     const losses = dayTrades.filter(t => t.wl === 'LOSS').length;
     const decided = wins + losses;
@@ -279,17 +1363,147 @@
     const wrCls = wrPct == null ? '' : wrPct >= 60 ? 'wr-good' : wrPct >= 45 ? 'wr-mid' : 'wr-bad';
     const wrBadge = wrPct == null ? '' : `<span class="wr-badge ${wrCls}">${wrPct}%</span>`;
 
-    let groupedHTML = '';
-    if (!dayTrades.length) {
-      groupedHTML = '<div class="empty-note">No trades on this day.</div>';
-    } else {
-      // Step 1: collapse identical fills within a group_id
-      // (same entry/exit time + same prices → one display row, qty/pl summed)
-      const groupKey = (t) => t.group_id || `${t.entry_time}-${t.strike}-${t.type}`;
+    // Pre-compute legs + drawdown timeline (used by multiple views)
+    const legResult = buildLegs(dayTrades);
+    const legs = legResult.legs;
+    const anomalies = legResult.anomalies;
+    const ddTl = buildDrawdownTimeline(dayTrades);
+
+    // Day-header friction + add-direction counters
+    const totalAddsDown = legs.reduce((s, l) => s + l.addsDown, 0);
+    const totalAddsUp = legs.reduce((s, l) => s + l.addsUp, 0);
+    const totalAddsFlat = legs.reduce((s, l) => s + (l.addsFlat || 0), 0);
+    const friction = frictionEstimate(totalQty);
+    const fees = feeExact(totalQty);
+
+    // ---------- View renderers ----------
+    function renderLegsView() {
+      if (!legs.length) return '<div class="empty-note">No trades on this day.</div>';
+      return legs.map((l, idx) => {
+        const plCls = l.pl >= 0 ? 'g' : 'r';
+        const wl = l.pl > 0 ? 'WIN' : l.pl < 0 ? 'LOSS' : 'BE';
+        const fillCount = l.events.filter(e => e.kind === 'close' || e.kind === 'scale-out').length;
+
+        // qty + adds, rendered next to contract name
+        const addsHTML = [];
+        if (l.addsDown) addsHTML.push(`<span class="ad ad-down">${l.addsDown}🔻</span>`);
+        if (l.addsUp)   addsHTML.push(`<span class="ad ad-up">${l.addsUp}🔺</span>`);
+        if (l.addsFlat) addsHTML.push(`<span class="ad ad-flat">${l.addsFlat}➕</span>`);
+        const qtyAdds = `<span class="qty-adds">×${l.totalOpened}${addsHTML.length ? ' ' + addsHTML.join(' ') : ''}</span>`;
+
+        // Multi-day display: compact "🌙 M/D" — entry date if shown on exit day,
+        // exit date if shown on entry day. The longer "carried from" / "closed"
+        // verbs live in the tooltip so the contract line stays short.
+        const multiDayTag = l.multiDay
+          ? (l.endDate === dateStr
+              ? `<span class="multi-day-tag" data-tip="Opened ${l.startDate} — closed today (P/L attributed to today per Option II accounting).">🌙 ${fmtShortDate(l.startDate)}</span>`
+              : `<span class="multi-day-tag" data-tip="Held overnight — closed ${l.endDate}.">🌙 ${fmtShortDate(l.endDate)}</span>`)
+          : '';
+
+        const dd = ddAtTime(ddTl, l.endTime);
+        const ddText = dd ? `<span class="dd-note ${dd.cum < 0 ? 'neg' : ''}">cumulative ${fmtPL(dd.cum)}</span>` : '';
+
+        // Auto-adapt annotations by hold timeframe (Decision 2B):
+        //   • Intraday (single session, ≤6.5hr): theta-band tokens by hour-of-day.
+        //   • Multi-session / multi-day: DTE-at-entry + days-held, since hour-of-day stops
+        //     being the dominant theta signal once you cross sessions.
+        const bandName = (h) => h == null ? '' : h < 11 ? 'low' : h < 13 ? 'building' : h < 15 ? 'heavy' : 'extreme';
+        const bandLabel = (h) => ({ low: 'low theta', building: 'theta building', heavy: 'theta heavy', extreme: 'theta extreme' }[bandName(h)] || '');
+        let tokensHTML, urgTip;
+        if (l.intraday) {
+          const entryBand = bandName(l.entryHour);
+          const exitBand = bandName(l.exitHour);
+          const sameBand = entryBand === exitBand;
+          tokensHTML = sameBand
+            ? `<span class="band-token ${entryBand}">${bandLabel(l.entryHour)}</span>`
+            : `<span class="band-token ${entryBand}">${bandLabel(l.entryHour)}</span> <span class="arrow">→</span> <span class="band-token ${exitBand}">${bandLabel(l.exitHour)}</span>`;
+          urgTip = sameBand
+            ? `Position opened and exited in the same theta band; decay rate stayed consistent through the hold.`
+            : `Position opened during ${bandLabel(l.entryHour)} and exited during ${bandLabel(l.exitHour)}. Theta rate increased during the hold.`;
+        } else {
+          // Multi-session / multi-day: just the DTE-at-entry tag. The "held across
+          // sessions" framing is redundant since the 🌙 multi-day-tag on the contract
+          // already conveys the cross-day nature.
+          const dteTxt = l.dteAtEntry != null ? `${l.dteAtEntry}DTE at entry` : 'multi-session hold';
+          tokensHTML = `<span class="band-token building">📅 ${dteTxt}</span>`;
+          urgTip = `Held beyond a single intraday session — hour-of-day theta framing doesn't apply here. The dominant cost driver for multi-session holds is calendar decay across the position's DTE, not intraday rate-of-decay.`;
+        }
+        const exitsPill = fillCount > 1 ? `<span class="exits-pill">${fillCount} exits</span>` : '';
+
+        const eventsHTML = l.events.map(e => {
+          const icon = e.kind === 'open'      ? '◯'
+                     : e.kind === 'add'       ? (e.direction === 'avg-down' ? '🔻' : e.direction === 'avg-up' ? '🔺' : '➕')
+                     : e.kind === 'scale-out' ? (e.outcome === 'profit' ? '◐' : e.outcome === 'loss' ? '◑' : '◐')
+                     :                          '✓';
+          // Split note into label (fixed column) + detail (parenthesized), so detail
+          // aligns vertically across all event rows in the leg.
+          let noteLabel = '', noteDetail = '';
+          if (e.kind === 'open') {
+            noteLabel = 'open';
+          } else if (e.kind === 'add') {
+            noteLabel = 'add';
+            if (e.direction === 'avg-down')      noteDetail = `(🔻 avg-down ${(e.basisBefore - e.price).toFixed(2)}, basis was ${fmtPrice(e.basisBefore)})`;
+            else if (e.direction === 'avg-up')   noteDetail = `(🔺 avg-up ${(e.price - e.basisBefore).toFixed(2)}, basis was ${fmtPrice(e.basisBefore)})`;
+            else                                  noteDetail = `(➕ flat, same as basis ${fmtPrice(e.basisBefore)})`;
+          } else if (e.kind === 'scale-out' || e.kind === 'close') {
+            noteLabel = e.kind;
+            if (e.outcome === 'profit')      noteDetail = `(lock gains ${fmtPL(e.pl)})`;
+            else if (e.outcome === 'loss')   noteDetail = `(cut losses ${fmtPL(e.pl)})`;
+            else                              noteDetail = `(flat)`;
+          }
+          const sign = (e.kind === 'open' || e.kind === 'add') ? '+' : '−';
+          const plPart = (e.kind === 'close' || e.kind === 'scale-out') && e.pl
+                        ? `<span class="ev-pl ${e.pl >= 0 ? 'pos' : 'neg'}">${fmtPL(e.pl)}</span>` : `<span class="ev-pl"></span>`;
+          const evCls = e.kind === 'add' ? `${e.kind} ${e.direction || ''}` : e.kind;
+          const fillsTag = e._fills > 1 ? ` <span class="basis-tag">${e._fills} fills</span>` : '';
+          return `<div class="leg-event ${evCls}">
+            <span class="ev-time">${fmtTime(e.time)}</span>
+            <span class="ev-ico">${icon}</span>
+            <span class="ev-qty">${sign}${e.qty} @ ${fmtPrice(e.price)}${fillsTag}</span>
+            <span class="ev-note"><span class="note-label">${noteLabel}</span><span class="note-detail">${noteDetail}</span></span>
+            ${plPart}
+          </div>`;
+        }).join('');
+
+        // P/L % vs total entry cost basis. Skip if basis is zero (anomaly rows).
+        const pctStr = l.totalEntryCost > 0
+          ? (() => {
+              const pct = l.pl / l.totalEntryCost * 100;
+              const sign = pct > 0 ? '+' : '';
+              return `${sign}${pct.toFixed(0)}%`;
+            })()
+          : '';
+        const plPctHTML = pctStr ? `<span class="leg-pl-pct">${pctStr}</span>` : '';
+
+        return `<div class="leg-row" data-leg-idx="${idx}">
+          <div class="leg-head">
+            <span class="leg-caret">▶</span>
+            <span class="leg-contract">SPY ${l.strike}${typeAbbr(l.type)}${qtyAdds}${multiDayTag}</span>
+            <span class="leg-summary">
+              <span class="atom">${fmtTime(l.startTime)} <span class="arrow">→</span> ${fmtTime(l.endTime)}</span>
+              <span class="sep">·</span>
+              <span class="atom">${fmtPrice(l.avgEntry)} <span class="arrow">→</span> ${fmtPrice(l.avgExit)}</span>
+            </span>
+            <span class="leg-pl ${plCls}">${fmtPL(l.pl)}${plPctHTML}</span>
+            <span class="leg-wl ${wl}">${wl}</span>
+          </div>
+          <div class="leg-meta">
+            <span class="urgency-hold" data-tip="${urgTip}">🕒 ${fmtHold(l.holdMin)} hold</span>
+            <span class="urgency-tokens">${tokensHTML}</span>
+            ${ddText}
+          </div>
+          <div class="leg-events">${eventsHTML}</div>
+        </div>`;
+      }).join('');
+    }
+
+    // Roundtrips: collapse identical fills within group_id, divide by group
+    function renderRoundtripsView() {
+      if (!dayTrades.length) return '<div class="empty-note">No trades on this day.</div>';
       const fillKey = (t) => {
-        const entryPx = t.entry_cost && t.qty ? (Math.abs(t.entry_cost) / (t.qty * 100)).toFixed(2) : 'na';
-        const exitPx = t.exit_credit && t.qty ? (t.exit_credit / (t.qty * 100)).toFixed(2) : 'na';
-        return `${groupKey(t)}|${t.entry_time}|${t.exit_time}|${entryPx}|${exitPx}`;
+        const ePx = t.entry_cost && t.qty ? (Math.abs(t.entry_cost) / (t.qty * 100)).toFixed(2) : 'na';
+        const xPx = t.exit_credit && t.qty ? (t.exit_credit / (t.qty * 100)).toFixed(2) : 'na';
+        return `${groupKey(t)}|${t.entry_time}|${t.exit_time}|${ePx}|${xPx}`;
       };
       const collapsed = new Map();
       const order = [];
@@ -297,140 +1511,651 @@
         const k = fillKey(t);
         if (!collapsed.has(k)) {
           order.push(k);
-          collapsed.set(k, {
-            ...t,
-            qty: t.qty || 0,
-            pl: t.pl || 0,
-            entry_cost: t.entry_cost || 0,
-            exit_credit: t.exit_credit || 0,
-            _fills: 1,
-          });
+          collapsed.set(k, { ...t, qty: t.qty || 0, pl: t.pl || 0,
+            entry_cost: t.entry_cost || 0, exit_credit: t.exit_credit || 0, _fills: 1 });
         } else {
           const c = collapsed.get(k);
-          c.qty += (t.qty || 0);
-          c.pl += (t.pl || 0);
-          c.entry_cost += (t.entry_cost || 0);
-          c.exit_credit += (t.exit_credit || 0);
+          c.qty += (t.qty || 0); c.pl += (t.pl || 0);
+          c.entry_cost += (t.entry_cost || 0); c.exit_credit += (t.exit_credit || 0);
           c._fills += 1;
         }
       });
-
-      // Step 2: cluster by group_id, render with dividers between groups
       const groupOrder = [];
-      const seenGroups = new Set();
-      order.forEach(k => {
-        const t = collapsed.get(k);
-        const g = groupKey(t);
-        if (!seenGroups.has(g)) { seenGroups.add(g); groupOrder.push(g); }
-      });
+      const seenG = new Set();
+      order.forEach(k => { const g = groupKey(collapsed.get(k)); if (!seenG.has(g)) { seenG.add(g); groupOrder.push(g); } });
 
-      groupedHTML = groupOrder.map(gid => {
+      return groupOrder.map(gid => {
         const rows = order.map(k => collapsed.get(k)).filter(t => groupKey(t) === gid);
         return rows.map(t => {
           const ePx = t.entry_cost && t.qty ? Math.abs(t.entry_cost) / (t.qty * 100) : null;
           const xPx = t.exit_credit && t.qty ? t.exit_credit / (t.qty * 100) : null;
           const hold = t.hold_time_min != null ? Math.round(t.hold_time_min) + 'm' : '';
           const plCls = (t.pl || 0) >= 0 ? 'g' : 'r';
-          const wl = t.wl || '';
-          const typeAbbr = t.type === 'Call' ? 'C' : t.type === 'Put' ? 'P' : '?';
           const fillTag = t._fills > 1 ? `<span class="rt-fills-tag">${t._fills} fills</span>` : '';
           return `<div class="rt-row">
             <span class="rt-time">${fmtTime(t.entry_time)} → ${fmtTime(t.exit_time)}${hold ? ' <span style="color:#666">('+hold+')</span>' : ''}</span>
-            <span class="rt-contract">SPY ${t.strike}${typeAbbr} ×${t.qty || '?'}${fillTag}</span>
+            <span class="rt-contract">SPY ${t.strike}${typeAbbr(t.type)} ×${t.qty || '?'}${fillTag}</span>
             <span class="rt-prices">${fmtPrice(ePx)} → ${fmtPrice(xPx)}</span>
             <span class="rt-pl ${plCls}">${fmtPL(t.pl)}</span>
-            <span class="rt-wl ${wl}">${wl}</span>
+            <span class="rt-wl ${t.wl || ''}">${t.wl || ''}</span>
           </div>`;
         }).join('') + '<div class="rt-group-divider"></div>';
       }).join('').replace(/<div class="rt-group-divider"><\/div>$/, '');
     }
 
-    modalEl.innerHTML = `
-      <button class="cal-close" aria-label="Close">×</button>
-      <h2>${dateStr} — ${dowName}</h2>
-      <div class="cal-sub">${dayData ? dayData.num_trades + ' trades · ' + totalQty + ' contracts' : 'No data'}</div>
-      <div class="cal-stat-row">
-        <div><span class="lbl">Day P/L</span><span class="val ${plClass}">${dayData ? fmtPL(dayData.pl) : '—'}</span></div>
-        <div><span class="lbl">Wins</span><span class="val">${dayData ? dayData.wins + '/' + dayData.num_trades : '—'}${wrBadge}</span></div>
-        <div><span class="lbl">Cumulative</span><span class="val">${dayData ? fmtPL(dayData.cumulative_pl) : '—'}</span></div>
-        <div><span class="lbl">VIX</span><span class="val">${dayData && dayData.vix != null ? dayData.vix : '—'}</span></div>
-      </div>
-      <h3>Round trips</h3>
-      ${groupedHTML}
-    `;
-    modalEl.querySelector('.cal-close').addEventListener('click', closeModal);
+    // Fills: every CSV row, raw
+    function renderFillsView() {
+      if (!dayTrades.length) return '<div class="empty-note">No trades on this day.</div>';
+      return dayTrades.map(t => {
+        const ePx = t.entry_cost && t.qty ? Math.abs(t.entry_cost) / (t.qty * 100) : null;
+        const xPx = t.exit_credit && t.qty ? t.exit_credit / (t.qty * 100) : null;
+        const hold = t.hold_time_min != null ? Math.round(t.hold_time_min) + 'm' : '';
+        const plCls = (t.pl || 0) >= 0 ? 'g' : 'r';
+        return `<div class="rt-row">
+          <span class="rt-time">${fmtTime(t.entry_time)} → ${fmtTime(t.exit_time)}${hold ? ' <span style="color:#666">('+hold+')</span>' : ''}</span>
+          <span class="rt-contract">SPY ${t.strike}${typeAbbr(t.type)} ×${t.qty || '?'}</span>
+          <span class="rt-prices">${fmtPrice(ePx)} → ${fmtPrice(xPx)}</span>
+          <span class="rt-pl ${plCls}">${fmtPL(t.pl)}</span>
+          <span class="rt-wl ${t.wl || ''}">${t.wl || ''}</span>
+        </div>`;
+      }).join('');
+    }
+
+    // By contract: aggregate legs by (strike, type)
+    function renderContractView() {
+      if (!legs.length) return '<div class="empty-note">No trades on this day.</div>';
+      const byCt = new Map();
+      legs.forEach(l => {
+        const k = `${l.strike}-${l.type}`;
+        if (!byCt.has(k)) byCt.set(k, { strike: l.strike, type: l.type, legs: 0, qty: 0, pl: 0, addsDown: 0, addsUp: 0 });
+        const c = byCt.get(k);
+        c.legs++; c.qty += l.totalOpened; c.pl += l.pl;
+        c.addsDown += l.addsDown; c.addsUp += l.addsUp;
+      });
+      const arr = [...byCt.values()].sort((a, b) => Math.abs(b.pl) - Math.abs(a.pl));
+      return arr.map(c => {
+        const plCls = c.pl >= 0 ? 'g' : 'r';
+        const adds = c.addsDown + c.addsUp;
+        const addsBit = adds ? ` · ${c.addsDown ? c.addsDown + '🔻' : ''}${c.addsDown && c.addsUp ? ' ' : ''}${c.addsUp ? c.addsUp + '🔺' : ''}` : '';
+        return `<div class="bucket-row">
+          <span class="bucket-name">SPY ${c.strike}${typeAbbr(c.type)}</span>
+          <span class="bucket-meta">${c.legs} leg${c.legs > 1 ? 's' : ''} · ×${c.qty}${addsBit}</span>
+          <span></span>
+          <span class="bucket-pl ${plCls}">${fmtPL(c.pl)}</span>
+          <span class="bucket-wr"></span>
+        </div>`;
+      }).join('');
+    }
+
+    // By hour: bucket trades by entry hour
+    function renderHourView() {
+      if (!dayTrades.length) return '<div class="empty-note">No trades on this day.</div>';
+      const buckets = new Map();
+      dayTrades.forEach(t => {
+        const h = t.entry_hour != null ? t.entry_hour : -1;
+        if (!buckets.has(h)) buckets.set(h, { hour: h, n: 0, qty: 0, pl: 0, wins: 0, losses: 0 });
+        const b = buckets.get(h);
+        b.n++; b.qty += (t.qty || 0); b.pl += (t.pl || 0);
+        if (t.wl === 'WIN') b.wins++; else if (t.wl === 'LOSS') b.losses++;
+      });
+      const arr = [...buckets.values()].sort((a, b) => a.hour - b.hour);
+      return arr.map(b => {
+        const plCls = b.pl >= 0 ? 'g' : 'r';
+        const decided = b.wins + b.losses;
+        const wr = decided ? Math.round(b.wins / decided * 100) + '%' : '—';
+        const urg = urgencyClass(b.hour);
+        const hrLabel = b.hour < 0 ? '?' : `${b.hour}:00-${b.hour+1}:00`;
+        return `<div class="bucket-row">
+          <span class="bucket-name ${urg}">${hrLabel}</span>
+          <span class="bucket-meta">${b.n} trade${b.n > 1 ? 's' : ''} · ×${b.qty}</span>
+          <span></span>
+          <span class="bucket-pl ${plCls}">${fmtPL(b.pl)}</span>
+          <span class="bucket-wr">${wr}</span>
+        </div>`;
+      }).join('');
+    }
+
+    // Intraday chart section — Lightweight Charts candles + premarket H/L lines + trade markers.
+    // Default mode: chart visible if intraday data is cached for this date. Otherwise shows
+    // a fallback card with daily OHLC from the SPY-daily cache (Step 3 data).
+    function renderIntradayChartSection() {
+      const market = marketByDate.get(dateStr);
+      // Hide the whole section on days where SPY didn't trade AND there are no
+      // user trades — typically weekends / holidays surfaced via a deposit or
+      // dividend event. Nothing to show; was noisy as "Intraday not available".
+      if (!market && !dayTrades.length) return '';
+      // Summary-bar stats — all from the spy_daily cache (Step 3), works even when
+      // intraday cache is missing for this date.
+      const spyHTML = (market && market.spy_pct != null)
+        ? (() => {
+            const cls = market.spy_pct > 0.05 ? 'pos' : market.spy_pct < -0.05 ? 'neg' : 'neu';
+            const sign = market.spy_pct > 0 ? '+' : '';
+            return `<span class="ic-spy ${cls}">SPY ${sign}${market.spy_pct.toFixed(2)}%</span>`;
+          })()
+        : '<span class="ic-spy neu">SPY —</span>';
+      const vixHTML = (market && market.vix_close != null)
+        ? `<span class="ic-vix ${vixBand(market.vix_close)}">VIX ${market.vix_close.toFixed(1)}</span>`
+        : '<span class="ic-vix">VIX —</span>';
+      const ohlcHTML = market
+        ? `<span class="ic-ohlc">
+             <strong>O</strong> $${(market.spy_open  || 0).toFixed(2)}<span class="sep">·</span>
+             <strong>H</strong> $${(market.spy_high  || 0).toFixed(2)}<span class="sep">·</span>
+             <strong>L</strong> $${(market.spy_low   || 0).toFixed(2)}<span class="sep">·</span>
+             <strong>C</strong> $${(market.spy_close || 0).toFixed(2)}
+           </span>`
+        : `<span class="ic-ohlc">—</span>`;
+      const openAttr = readPref('cal-ic-open', false) ? 'open' : '';
+      const ethActive  = readPref('cal-ic-eth',  true) ? 'active' : '';
+      const pmhlActive = readPref('cal-ic-pmhl', true) ? 'active' : '';
+      return `<details class="ic-section" id="ic-section" ${openAttr}>
+        <summary class="ic-summary">
+          <span class="ic-caret">▶</span>
+          <span class="ic-summary-label">Intraday</span>
+          ${spyHTML}
+          ${vixHTML}
+          ${ohlcHTML}
+          <span class="ic-info" data-tip="<strong>Intraday chart</strong> — 5m SPY bars from Polygon (free tier, 2y rolling window). Premarket high/low drawn as horizontal lines. Entry/exit markers overlaid for the day's trades. Extended-hours bars are dimmed; toggle Show ETH off to hide them entirely.">ⓘ</span>
+        </summary>
+        <div class="ic-body">
+          <div class="ic-toolbar">
+            <span class="lbl">Interval</span>
+            <button class="ic-interval-chip active" data-interval="5">5m</button>
+            <button class="ic-interval-chip" data-interval="10">10m</button>
+            <button class="ic-interval-chip" data-interval="15">15m</button>
+            <span class="lbl" style="margin-left:14px">Show</span>
+            <button class="ic-interval-chip ${ethActive}"  data-toggle="eth"
+              data-tip="Show extended-hours bars (04:00–09:30 and 16:00–20:00 ET) in addition to the regular session. Off = RTH only.">ETH</button>
+            <button class="ic-interval-chip ${pmhlActive}" data-toggle="pmhl"
+              data-tip="Draw horizontal lines at the premarket high and low — anchors for level-based 0DTE entries.">PM H/L</button>
+          </div>
+          <div id="ic-mount">
+            <div class="ic-loading">Loading intraday data…</div>
+          </div>
+        </div>
+      </details>`;
+    }
+
+    // Renders a collapsible "Cash flow" header that lives above the view body.
+    // Default collapsed; one-line summary shows total in/out + indicator chips.
+    // Click the header to expand into the full per-event list. Hidden entirely when
+    // no events exist for the day.
+    function renderCashFlowSection() {
+      const events = flowsByDate.get(dateStr) || [];
+      if (!events.length) return '';
+
+      // Tally directional totals so the summary uses verbs ("$X in / $Y out") instead
+      // of an ambiguous signed total. Failed/voided are excluded from totals; internals
+      // are bucketed separately (they don't change net deposited).
+      const live = events.filter(e => !['failed', 'voided'].includes(e.state));
+      let totalIn = 0, totalOut = 0, internalTotal = 0;
+      let depositCount = 0, withdrawalCount = 0, internalCount = 0;
+      let pendingCount = 0, failedCount = events.length - live.length;
+      let earlyAccessTotal = 0;
+      live.forEach(e => {
+        if (e.state === 'pending') pendingCount++;
+        if (e.kind === 'deposit' || e.kind === 'dividend' || e.kind === 'referral') {
+          totalIn += e.amount || 0;
+          if (e.kind === 'deposit') {
+            depositCount++;
+            if (e.early_access_amount != null) earlyAccessTotal += e.early_access_amount;
+          }
+        } else if (e.kind === 'withdrawal' || e.kind === 'gold_fee') {
+          totalOut += e.amount || 0;
+          if (e.kind === 'withdrawal') withdrawalCount++;
+        } else if (e.kind === 'internal') {
+          internalTotal += e.amount || 0;
+          internalCount++;
+        }
+      });
+      const net = totalIn - totalOut;
+
+      // Headline phrasing — directional verbs, not signed totals.
+      let summary;
+      if (totalIn > 0 && totalOut > 0) {
+        summary = `$${totalIn.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} in / $${totalOut.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} out`;
+      } else if (totalIn > 0) {
+        summary = `Net $${totalIn.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} deposited`;
+      } else if (totalOut > 0) {
+        summary = `Net $${totalOut.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} withdrawn`;
+      } else if (internalCount > 0) {
+        summary = `$${internalTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} moved between accounts`;
+      } else {
+        summary = `${events.length} event${events.length > 1 ? 's' : ''} (none affected balance)`;
+      }
+
+      // Indicator chips: ↓ deposits, ↑ withdrawals, ↔ internals, ⏳ pending, ⚡ instant-eligible
+      const chips = [];
+      if (depositCount)    chips.push(`<span class="cf-chip cf-in">↓ ${depositCount}</span>`);
+      if (withdrawalCount) chips.push(`<span class="cf-chip cf-out">↑ ${withdrawalCount}</span>`);
+      if (internalCount)   chips.push(`<span class="cf-chip cf-int">↔ ${internalCount}</span>`);
+      if (pendingCount)    chips.push(`<span class="cf-chip cf-pending">⏳ ${pendingCount}</span>`);
+      if (failedCount)     chips.push(`<span class="cf-chip cf-failed">✗ ${failedCount}</span>`);
+      if (earlyAccessTotal > 0) {
+        chips.push(`<span class="cf-chip cf-instant" data-tip="Of the deposits today, <strong>$${earlyAccessTotal.toFixed(2)}</strong> was granted immediate buying power (the rest waits 3-5 days for ACH clearing). Tilt-relevant amount for same-day intervention analysis.">⚡ $${earlyAccessTotal.toFixed(0)} instant</span>`);
+      }
+
+      // Sort rows: pending+completed first by submission time, failed/voided last
+      const order = (e) => ['failed', 'voided'].includes(e.state) ? 2 : 0;
+      const sorted = [...events].sort((a, b) => order(a) - order(b)
+                                                || (a.timestamp || '').localeCompare(b.timestamp || ''));
+
+      const iconFor = (kind) =>
+        kind === 'deposit'    ? '↓' :
+        kind === 'withdrawal' ? '↑' :
+        kind === 'internal'   ? '↔' :
+        kind === 'gold_fee'   ? '💳' :
+        kind === 'dividend'   ? '💰' :
+        kind === 'referral'   ? '🎁' : '·';
+      const amountCls = (e) => {
+        if (e.kind === 'deposit' || e.kind === 'dividend' || e.kind === 'referral') return 'pos';
+        if (e.kind === 'withdrawal' || e.kind === 'gold_fee') return 'neg';
+        return 'neutral';
+      };
+      const signFor = (e) =>
+        e.kind === 'deposit' || e.kind === 'dividend' || e.kind === 'referral' ? '+' :
+        e.kind === 'withdrawal' || e.kind === 'gold_fee' ? '−' : '';
+      // Compact time formatter: HH:MM for events with an ISO timestamp (transfers),
+      // M/D fallback for date-only events (dividends, gold fees, referrals).
+      // Lets the 60px time column accommodate both without wrapping.
+      const tsCompact = (e) => {
+        if (e.timestamp) {
+          const m = String(e.timestamp).match(/T(\d{2}:\d{2})/);
+          if (m) return m[1];
+        }
+        if (e.date) {
+          const parts = e.date.split('-');
+          if (parts.length === 3) return `${parseInt(parts[1], 10)}/${parseInt(parts[2], 10)}`;
+          return e.date;
+        }
+        return '';
+      };
+      // Derive a readable "from/to/asset" for the note column. Order of preference:
+      //   internal/deposit/withdrawal → human account names
+      //   dividend                    → resolved ticker symbol, fall back to UUID prefix
+      //   else                        → originator, note, asset, transfer_type
+      const noteFor = (e) => {
+        if (e.kind === 'internal' && (e.orig_account_name || e.recv_account_name)) {
+          return `${e.orig_account_name || '?'} → ${e.recv_account_name || '?'}`;
+        }
+        if (e.kind === 'deposit'    && e.recv_account_name) return `→ ${e.recv_account_name}`;
+        if (e.kind === 'withdrawal' && e.orig_account_name) return `${e.orig_account_name} →`;
+        if (e.kind === 'dividend') {
+          if (e.symbol) return e.symbol;
+          if (e.instrument_id) return e.instrument_id.slice(0, 8) + '…';
+          return '';
+        }
+        return e.originator || e.note || e.asset || e.transfer_type || '';
+      };
+      // Tooltip — full instrument UUID is useful for dividends when only a prefix renders.
+      const titleFor = (e) => {
+        if (e.kind === 'dividend' && e.instrument_id) {
+          return `instrument: ${e.instrument_id}` + (e.symbol ? ` (${e.symbol})` : '');
+        }
+        return noteFor(e) || '';
+      };
+
+      const rowsHTML = sorted.map(e => {
+        const dim = ['failed', 'voided'].includes(e.state) ? ' dim' : '';
+        const stateCls = ['failed', 'voided', 'pending'].includes(e.state) ? e.state : '';
+        const time = tsCompact(e);
+        const instantBadge = (e.kind === 'deposit' && e.early_access_amount > 0)
+          ? ` <span class="cf-row-instant" data-tip="$${e.early_access_amount.toFixed(2)} of this deposit became immediately tradeable (early-access granted by RH)">⚡</span>` : '';
+        return `<div class="cf-row${dim}">
+          <span class="cf-ico">${iconFor(e.kind)}</span>
+          <span class="cf-kind">${e.kind.replace('_', ' ')}</span>
+          <span class="cf-date">${time}</span>
+          <span class="cf-note" title="${(titleFor(e) || '').replace(/"/g, '&quot;')}">${noteFor(e)}${instantBadge}</span>
+          <span class="cf-amount ${amountCls(e)}">${signFor(e)}$${Math.abs(e.amount).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+          <span class="cf-state ${stateCls}">${e.state}</span>
+        </div>`;
+      }).join('');
+
+      const cfOpenAttr = readPref('cal-cf-open', false) ? 'open' : '';
+      return `<details class="cf-section" id="cf-section" ${cfOpenAttr}>
+        <summary class="cf-summary">
+          <span class="cf-caret">▶</span>
+          <span class="cf-summary-label">Cash flow</span>
+          <span class="cf-summary-amount">${summary}</span>
+          <span class="cf-summary-chips">${chips.join(' ')}</span>
+          <span class="cf-summary-count">${events.length} event${events.length > 1 ? 's' : ''}</span>
+          <span class="cf-info" data-tip="<strong>Cash flow</strong> — every transfer, fee, dividend, and referral grant dated to this day. Internals (↔) move money between your own accounts and don't change your net deposited basis. Failed/voided rows are shown greyed out.">ⓘ</span>
+        </summary>
+        <div class="cf-body">
+          <div class="cf-thead">
+            <span></span><span>Kind</span><span>Time</span><span>From / To · Note</span>
+            <span style="text-align:right">Δ Balance</span><span style="text-align:right">State</span>
+          </div>
+          ${rowsHTML}
+        </div>
+      </details>`;
+    }
+
+    // Render carried-into-next-session section for trades opened today but closing later.
+    // Shown on the entry date so the user still sees what they put on, even though P/L
+    // attribution lives on the exit date (Option II accounting).
+    // Renders "Carried positions" — trades opened on this date that close on a different
+    // date (covers anything from overnight 1DTE up to multi-month holds). Each row is
+    // clickable and links to the right destination:
+    //   • If position is still open (no spy_trades.csv close yet) → Positions tab with
+    //     scroll-to-highlight via #positions:<contract_key>
+    //   • Already closed (multi-day historical) → calendar modal for the close date
+    function renderCarriedOut() {
+      if (!carriedOutTrades.length) return '';
+      const groups = new Map();
+      carriedOutTrades.forEach(t => {
+        const g = groupKey(t);
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push(t);
+      });
+      const items = [...groups.values()].map(rows => {
+        const first = rows[0];
+        const totalQty = rows.reduce((s, r) => s + (r.qty || 0), 0);
+        const totalEntryCost = rows.reduce((s, r) => s + Math.abs(r.entry_cost || 0), 0);
+        const entryPx = totalQty ? totalEntryCost / (totalQty * 100) : 0;
+        const closeDate = first.exit_date;
+        // Build contract_key matching the Positions view format: SYMBOL-STRIKE-TYPE-EXPIRY
+        // We don't have expiry in spy_trades.csv per row reliably (could parse from group_id),
+        // so use a lighter key keyed on symbol/strike/type/close-date for the link target.
+        const contractKey = `${(first.symbol||'SPY')}-${first.strike}-${first.type}-${first.expiry_date || closeDate}`;
+        const days = (() => {
+          try { return Math.max(1, Math.round((new Date(closeDate) - new Date(first.date)) / 86400000)); } catch { return null; }
+        })();
+        const heldLabel = days == null ? '' : (days === 1 ? '1 day held' : `${days} days held`);
+        return `<div class="carried-row" role="button" tabindex="0"
+            data-contract-key="${contractKey}" data-close-date="${closeDate}"
+            data-tip="<strong>Click to navigate</strong><br>If still open: jumps to Positions tab with this contract highlighted.<br>If already closed: opens the modal for the close date (${fmtShortDate(closeDate)}).">
+          <span class="ct-contract">${(first.symbol||'SPY')} ${first.strike}${typeAbbr(first.type)}</span>
+          <span class="ct-qty">×${totalQty}</span>
+          <span class="ct-entry">${fmtTime(first.entry_time)} @ ${fmtPrice(entryPx)}</span>
+          <span class="ct-closes">closes ${fmtShortDate(closeDate)}${heldLabel ? ' · ' + heldLabel : ''}</span>
+          <span class="pending-tag">PENDING</span>
+        </div>`;
+      }).join('');
+      return `<div class="carried-section">
+        <h4 data-tip="<strong>Carried positions</strong> — opened on this day, closed on a different day. Could be overnight (1DTE) up to long-dated holds. Realized P/L is attributed to the close date, not today.">Carried positions</h4>
+        <p class="carried-note">Realized P/L attributed to close date — not counted in today's total. Click any row to follow.</p>
+        ${items}
+      </div>`;
+    }
+
+    function renderForMode(mode) {
+      switch (mode) {
+        case 'legs':       return renderLegsView();
+        case 'roundtrips': return renderRoundtripsView();
+        case 'fills':      return renderFillsView();
+        case 'contract':   return renderContractView();
+        case 'hour':       return renderHourView();
+        default:           return renderLegsView();
+      }
+    }
+
+    function chipsHTML(active) {
+      return VIEW_MODES.map(m =>
+        `<button class="cal-mode-chip ${m.id === active ? 'active' : ''}" data-mode="${m.id}">${m.label}</button>`
+      ).join('');
+    }
+
+    function paint() {
+      const mode = getViewMode();
+      const validMode = VIEW_MODES.some(m => m.id === mode) ? mode : VIEW_DEFAULT;
+      const heading = validMode === 'legs' ? 'Legs'
+                    : validMode === 'roundtrips' ? 'Round trips'
+                    : validMode === 'fills' ? 'Fills (raw executions)'
+                    : validMode === 'contract' ? 'By contract'
+                    : 'By hour';
+      modalEl.innerHTML = `
+        <button class="cal-close" aria-label="Close">×</button>
+        <h2>${dateStr} — ${dowName}</h2>
+        <div class="cal-sub">${dayData ? dayData.num_trades + ' trades · ' + totalQty + ' contracts' : 'No data'}</div>
+        <div class="cal-stat-row">
+          <div><span class="lbl">Day P/L</span><span class="val ${plClass}">${dayData ? fmtPL(dayData.pl) : '—'}</span></div>
+          <div><span class="lbl">Wins</span><span class="val">${dayData ? dayData.wins + '/' + dayData.num_trades : '—'}${wrBadge}</span></div>
+          <div><span class="lbl">Cumulative</span><span class="val">${dayData ? fmtPL(dayData.cumulative_pl) : '—'}</span></div>
+          <div><span class="lbl">VIX</span><span class="val">${dayData && dayData.vix != null ? dayData.vix : '—'}</span></div>
+        </div>
+        <div class="cal-meta-row">
+          <span data-tip="<strong>Friction est.</strong> — estimated bid-ask spread cost across all round trips today.
+Formula: ~$${FRICTION_PER_CONTRACT_RT}/contract round trip × ${totalQty} contracts.
+Assumes ~$0.03 spread on 0DTE SPY ATM options, paid on entry + exit.
+Real spread isn't in your CSVs (RH doesn't report execution-time bid/ask), so this is a flat estimate."><span class="meta-label">Friction est.</span><span class="friction-est">~$${friction.toLocaleString()} cost</span></span>
+          <span data-tip="<strong>Fees</strong> — Robinhood options contract fees (ORF + clearing).
+Formula: $${FEE_PER_CONTRACT_SIDE}/contract/side × ${totalQty} contracts × 2 sides = $${fees}.
+Exact — deterministic from contract count, not estimated."><span class="meta-label">Fees</span><span class="friction-est">$${fees.toFixed(2)}</span></span>
+          <span data-tip="<strong>Adds</strong> — events where you increased an existing position (didn't go flat first).
+🔻 avg-down: added at a lower price than your existing basis (doubling down on a losing thesis)
+🔺 avg-up:   added at a higher price (scaling into a working thesis)
+➕ flat:     added at the same price (rare; broker-fragmented opens within 60s are auto-merged and don't count here)"><span class="meta-label">Adds:</span>
+            <span class="add-down">${totalAddsDown}🔻</span>
+            <span class="add-up">${totalAddsUp}🔺</span>
+            ${totalAddsFlat ? `<span class="add-flat">${totalAddsFlat}➕</span>` : ''}
+          </span>
+          <span data-tip="<strong>Legs</strong> — a continuous holding period for one (strike, type) pair.
+Starts when you open a new position, ends the moment your net contracts on that strike returns to zero.
+Re-entering the same strike later = a new leg (a separate trading decision).
+Multiple round trips of the same strike inside one continuous hold = one leg with multiple exits."><span class="meta-label">Legs:</span>${legs.length}</span>
+          ${anomalies ? `<span class="anomaly" data-tip="<strong>Anomaly rows</strong> — rows with qty=0 (likely options events: expirations, exercises, or assignments). Skipped from leg detection.">⚠ ${anomalies} anomaly row${anomalies > 1 ? 's' : ''}</span>` : ''}
+        </div>
+        ${renderCarriedOut()}
+        ${renderIntradayChartSection()}
+        ${renderCashFlowSection()}
+        <div class="cal-mode-row">
+          <span class="lbl">View</span>
+          ${chipsHTML(validMode)}
+        </div>
+        <h3>${heading}</h3>
+        <div id="cal-view-body">${renderForMode(validMode)}</div>
+      `;
+      modalEl.querySelector('.cal-close').addEventListener('click', closeModal);
+      modalEl.querySelectorAll('.cal-mode-chip').forEach(btn => {
+        btn.addEventListener('click', () => { setViewMode(btn.dataset.mode); paint(); });
+      });
+      // Leg row expand/collapse
+      modalEl.querySelectorAll('.leg-row').forEach(row => {
+        row.addEventListener('click', (e) => {
+          // ignore clicks on inner events
+          if (e.target.closest('.leg-events')) return;
+          row.classList.toggle('expanded');
+        });
+      });
+      // Carried-positions row click → cross-view navigation
+      modalEl.querySelectorAll('.carried-row[role="button"]').forEach(row => {
+        const handler = async () => {
+          const ckey = row.dataset.contractKey;
+          const closeDate = row.dataset.closeDate;
+          // Check if position is still open: hit /api/positions and look for matching key
+          let stillOpen = false;
+          try {
+            const positions = await apiFetch('/api/positions');
+            stillOpen = positions.some(p => p.contract_key === ckey);
+          } catch {}
+          closeModal();
+          if (stillOpen && typeof window.loadView === 'function') {
+            window.location.hash = 'positions:' + encodeURIComponent(ckey);
+            window.loadView('positions');
+          } else {
+            // Position already closed — jump to its close-date modal
+            // (calendar view is already loaded, just open the modal for that date)
+            if (lookup[closeDate]) openDayModal(closeDate);
+            else if (typeof window.loadView === 'function') window.loadView('calendar');
+          }
+        };
+        row.addEventListener('click', handler);
+        row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); } });
+      });
+      // Custom tooltip bindings (replaces native title=)
+      bindTips(modalEl);
+    }
+
+    // Intraday chart lifecycle. Fetch once per modal open (cached in intradayCache).
+    // Mount the chart after every paint, since paint rewrites innerHTML and destroys
+    // the chart's container. activeChart is module-level so closeModal() cleans up
+    // regardless of which paint installed the chart.
+    let intradayInterval = 5;
+    async function getIntradayData() {
+      if (intradayCache.has(dateStr)) return intradayCache.get(dateStr);
+      const promise = apiFetch('/api/spy/intraday/' + dateStr).catch(() => null);
+      intradayCache.set(dateStr, promise);
+      const resolved = await promise;
+      intradayCache.set(dateStr, resolved);
+      return resolved;
+    }
+    async function mountIntradayChart() {
+      const mount = modalEl.querySelector('#ic-mount');
+      if (!mount) return;
+      destroyActiveChart();
+      const data = await getIntradayData();
+      // Re-check mount because paint() may have rewritten innerHTML in the meantime.
+      const mount2 = modalEl.querySelector('#ic-mount');
+      if (!mount2) return;
+
+      const hasBars = data && data.bars && data.bars.length && data.available !== false;
+      if (!hasBars) {
+        const reason = data ? data.reason : 'not_cached';
+        const market = marketByDate.get(dateStr);
+        const reasonMsg = ({
+          'out_of_plan':  "Polygon's free tier only covers the last ~2 years. Bars beyond that aren't available.",
+          'no_data':      "No intraday bars exist for this date (likely a market holiday or weekend).",
+          'not_cached':   `Intraday data for this date hasn't been fetched yet. Run <code>python spy_intraday.py --date ${dateStr}</code> or use Admin → Run.`,
+          'corrupt':      `Cache file exists but is corrupt. Re-fetch with <code>python spy_intraday.py --date ${dateStr}</code>.`,
+          'error':        (data && data.message) || "Polygon API returned an error.",
+        })[reason] || "Intraday data is not available.";
+        const ohlc = market ? `<div class="ohlc">
+          <span><strong>O</strong> $${(market.spy_open  || 0).toFixed(2)}</span>
+          <span><strong>H</strong> $${(market.spy_high  || 0).toFixed(2)}</span>
+          <span><strong>L</strong> $${(market.spy_low   || 0).toFixed(2)}</span>
+          <span><strong>C</strong> $${(market.spy_close || 0).toFixed(2)}</span>
+        </div>` : '';
+        mount2.innerHTML = `<div class="ic-fallback">
+          <span class="big">Intraday chart not available</span>
+          ${reasonMsg}
+          ${ohlc}
+        </div>`;
+        return;
+      }
+
+      const showEth  = readPref('cal-ic-eth',  true);
+      const showPMHL = readPref('cal-ic-pmhl', true);
+      // Filter on raw 5m bars first so aggregation boundaries don't get smeared by
+      // mixing partial RTH+ETH bars when ETH is hidden.
+      const sourceBars = showEth ? data.bars : data.bars.filter(b => !isExtendedHours(b.t));
+      const bars = aggregateBars(sourceBars, intradayInterval);
+      // Premarket H/L is always computed from the FULL data, not the filtered set —
+      // otherwise hiding ETH would zero out the levels even though they exist.
+      const pm = data.bars.filter(b => isPremarket(b.t));
+      const pmh = pm.length ? Math.max(...pm.map(b => b.h)) : null;
+      const pml = pm.length ? Math.min(...pm.map(b => b.l)) : null;
+      const markers = computeTradeMarkers(dayTrades, dateStr, intradayInterval);
+
+      mount2.innerHTML = `<div class="ic-chart-container" id="ic-chart"></div>`;
+      const container = modalEl.querySelector('#ic-chart');
+      if (!window.LightweightCharts) {
+        mount2.innerHTML = `<div class="ic-fallback"><span class="big">Chart library failed to load</span>
+          The TradingView Lightweight Charts CDN didn't respond. Check your network or reload the page.</div>`;
+        return;
+      }
+      activeChart = LightweightCharts.createChart(container, {
+        layout: { background: { color: 'transparent' }, textColor: '#888' },
+        grid: {
+          vertLines: { color: 'rgba(255,255,255,0.04)' },
+          horzLines: { color: 'rgba(255,255,255,0.04)' },
+        },
+        // Force ET display (Lightweight Charts uses browser-local timezone otherwise).
+        // tickMarkFormatter handles axis labels; localization.timeFormatter handles
+        // the crosshair tooltip's time string.
+        timeScale: {
+          timeVisible: true, secondsVisible: false, borderColor: '#232633',
+          tickMarkFormatter: (t) => fmtETClock(t),
+        },
+        localization: {
+          timeFormatter: (t) => fmtETDateTime(t) + ' ET',
+        },
+        rightPriceScale: { borderColor: '#232633' },
+        crosshair: { mode: 1 },
+        autoSize: true,
+      });
+      const UP = '#4ade80', DOWN = '#f87171';
+      // Extended-hours candles render at lower alpha so the regular session pops.
+      // Matches RH's own visual treatment.
+      const UP_DIM = 'rgba(74,222,128,0.32)', DOWN_DIM = 'rgba(248,113,113,0.32)';
+      const series = activeChart.addCandlestickSeries({
+        upColor: UP, downColor: DOWN,
+        borderUpColor: UP, borderDownColor: DOWN,
+        wickUpColor: UP, wickDownColor: DOWN,
+      });
+      series.setData(bars.map(b => {
+        const item = { time: b.t, open: b.o, high: b.h, low: b.l, close: b.c };
+        if (isExtendedHours(b.t)) {
+          const up = b.c >= b.o;
+          item.color       = up ? UP_DIM  : DOWN_DIM;
+          item.borderColor = up ? UP_DIM  : DOWN_DIM;
+          item.wickColor   = up ? UP_DIM  : DOWN_DIM;
+        }
+        return item;
+      }));
+      if (markers.length) series.setMarkers(markers);
+      if (showPMHL && pmh != null) series.createPriceLine({ price: pmh, color: '#4ade80', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'PM High' });
+      if (showPMHL && pml != null) series.createPriceLine({ price: pml, color: '#f87171', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'PM Low' });
+      activeChart.timeScale().fitContent();
+    }
+    // Wire all the intraday-chart UI: interval (5/10/15), ETH visibility, PM H/L
+    // visibility, and the persistent open/closed state of both <details> sections.
+    function bindChartUI() {
+      // Interval chips — set the in-modal closure var, re-mount.
+      modalEl.querySelectorAll('.ic-interval-chip[data-interval]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          intradayInterval = parseInt(btn.dataset.interval, 10);
+          modalEl.querySelectorAll('.ic-interval-chip[data-interval]').forEach(b =>
+            b.classList.toggle('active', b.dataset.interval === btn.dataset.interval));
+          mountIntradayChart();
+        });
+      });
+      // ETH / PM H/L toggles — flip the pref, mirror to UI, re-mount.
+      modalEl.querySelectorAll('.ic-interval-chip[data-toggle]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const key = btn.dataset.toggle === 'eth' ? 'cal-ic-eth' : 'cal-ic-pmhl';
+          const next = !btn.classList.contains('active');
+          btn.classList.toggle('active', next);
+          writePref(key, next);
+          mountIntradayChart();
+        });
+      });
+      // Persist open/closed state of both collapsible sections.
+      const ic = modalEl.querySelector('#ic-section');
+      if (ic) ic.addEventListener('toggle', () => writePref('cal-ic-open', ic.open));
+      const cf = modalEl.querySelector('#cf-section');
+      if (cf) cf.addEventListener('toggle', () => writePref('cal-cf-open', cf.open));
+    }
+
+    // Wrap paint so each view-mode switch re-mounts the chart + re-binds chips.
+    // paint is declared inside this function so reassigning it only affects this scope.
+    const _origPaint = paint;
+    paint = function() {
+      destroyActiveChart();
+      _origPaint();
+      bindChartUI();
+      mountIntradayChart();
+    };
+
+    paint();
     modalBg.classList.add('open');
   }
 
+  // Wire overlay toggle chips — clicking flips the flag, persists, re-renders the month grid.
+  const overlayRow = document.getElementById('cal-overlay-row');
+  if (overlayRow) {
+    overlayRow.querySelectorAll('.overlay-chip').forEach(btn => {
+      const key = btn.dataset.overlay;
+      btn.classList.toggle('active', !!overlays[key]);
+      btn.addEventListener('click', () => {
+        overlays[key] = !overlays[key];
+        btn.classList.toggle('active', overlays[key]);
+        persistOverlays();
+        renderMonth();
+      });
+    });
+    bindTips(overlayRow);
+  }
+
   renderMonth();
-
-  // --- Habit Insights (computed from trade-level data) ---
-  const T = allTrades.map(t => ({
-    date: t.date, pl: t.pl || 0, type: t.type, hour: t.entry_hour,
-    wl: t.wl, qty: t.qty || 1, vix: t.vix
-  }));
-
-  const avgTradesPerDay = (totalTrades / days.length).toFixed(1);
-  const greenDays = days.filter(d => d.pl > 0).length;
-  const redDays = days.filter(d => d.pl < 0).length;
-  const medianPL = [...days].sort((a, b) => a.pl - b.pl)[Math.floor(days.length / 2)].pl;
-
-  // Overtrading: days with 6+ trades
-  const heavyDays = days.filter(d => d.num_trades >= 6);
-  const heavyAvg = heavyDays.length ? Math.round(heavyDays.reduce((s, d) => s + d.pl, 0) / heavyDays.length) : 0;
-
-  // Blowup days (> $500 loss)
-  const blowups = days.filter(d => d.pl < -500);
-  const blowupTotal = blowups.reduce((s, d) => s + d.pl, 0);
-
-  // Put vs Call
-  const puts = T.filter(t => t.type === 'Put');
-  const calls = T.filter(t => t.type === 'Call');
-  const putPL = puts.reduce((s, t) => s + t.pl, 0);
-  const callPL = calls.reduce((s, t) => s + t.pl, 0);
-  const putWR = puts.length ? Math.round(puts.filter(t => t.wl === 'WIN').length / puts.filter(t => t.wl !== 'BE').length * 100) : 0;
-  const callWR = calls.length ? Math.round(calls.filter(t => t.wl === 'WIN').length / calls.filter(t => t.wl !== 'BE').length * 100) : 0;
-
-  // Morning vs afternoon
-  const morningPL = T.filter(t => t.hour != null && t.hour < 12).reduce((s, t) => s + t.pl, 0);
-  const afternoonPL = T.filter(t => t.hour != null && t.hour >= 12).reduce((s, t) => s + t.pl, 0);
-
-  // 1-lot percentage
-  const oneLots = T.filter(t => t.qty === 1).length;
-  const oneLotPct = Math.round(oneLots / Math.max(T.length, 1) * 100);
-
-  const habits = document.getElementById('habits');
-  habits.innerHTML = `
-    <div class="insight-card warn">
-      <h3>Overtrading Signal</h3>
-      <p><span class="num y">${avgTradesPerDay} trades/day</span>
-      On days with 6+ trades (${heavyDays.length} days), avg P/L is ${plStr(heavyAvg)}. More trades \u2260 more profit.</p>
-    </div>
-    <div class="insight-card ${greenDays > redDays ? 'good' : 'bad'}">
-      <h3>Your Edge</h3>
-      <p><span class="num ${greenDays > redDays ? 'g' : 'r'}">${Math.round(greenDays / days.length * 100)}% winning days</span>
-      ${greenDays} green days vs ${redDays} red days. Median daily P/L: ${plStr(medianPL)}.</p>
-    </div>
-    <div class="insight-card bad">
-      <h3>Blowup Days</h3>
-      <p><span class="num r">${blowups.length} days > -$500</span>
-      Worst days cost ${plStr(blowupTotal)} total.${blowups.length ? ' Worst: ' + plStr(blowups.sort((a,b) => a.pl - b.pl)[0].pl) + ' on ' + blowups[0].date : ''}</p>
-    </div>
-    <div class="insight-card">
-      <h3>Position Sizing</h3>
-      <p><span class="num w">${oneLotPct}% of trades are 1-lot</span>
-      Biggest wins come from sizing up with conviction on high-confidence setups.</p>
-    </div>
-    <div class="insight-card ${putPL > callPL ? 'good' : 'bad'}">
-      <h3>Put vs Call</h3>
-      <p><span class="num ${putPL >= 0 ? 'g' : 'r'}">${plStr(putPL)} on puts</span>
-      vs ${plStr(callPL)} on calls. Put WR: ${putWR}%, Call WR: ${callWR}%.</p>
-    </div>
-    <div class="insight-card ${afternoonPL < 0 ? 'warn' : 'good'}">
-      <h3>Morning vs Afternoon</h3>
-      <p><span class="num ${afternoonPL >= 0 ? 'g' : 'y'}">${plStr(afternoonPL)} after noon</span>
-      Morning session (before noon): ${plStr(morningPL)}. Afternoon: ${plStr(afternoonPL)}.</p>
-    </div>
-  `;
 })();
 </script>
