@@ -44,4 +44,18 @@ else
     echo "⚠️ cash_flow.py failed (non-fatal)" >> "$LOG"
 fi
 
+# Refresh SPY + VIX daily cache (powers the calendar overlay)
+if .venv/bin/python spy_daily.py --json >> "$LOG" 2>&1; then
+    echo "✅ spy_daily.py success" >> "$LOG"
+else
+    echo "⚠️ spy_daily.py failed (non-fatal)" >> "$LOG"
+fi
+
+# Cache yesterday + today's SPY 5m bars (Polygon free tier; ~30s wall-time)
+if .venv/bin/python spy_intraday.py --json >> "$LOG" 2>&1; then
+    echo "✅ spy_intraday.py success" >> "$LOG"
+else
+    echo "⚠️ spy_intraday.py failed (non-fatal)" >> "$LOG"
+fi
+
 exit 0
