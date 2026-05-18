@@ -1,10 +1,12 @@
 .venv/
+.claude/
 .vscode/
 .pytest_cache/
 
 plans/
 archive/
 outputs/
+sandbox/
 __pycache__/
 
 .DS_Store
