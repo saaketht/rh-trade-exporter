@@ -260,8 +260,16 @@ class TestMainJsonMode:
             cash_flow.main(as_json=True)
 
         entry = json.loads((tmp_env / "outputs" / "cash_flow.jsonl").read_text().strip())
-        # Only completed deposits counted
+        # `deposits` field is completed-only, pending in its own field
         assert entry["deposits"] == 1000.0
+        assert entry["deposits_pending"] == 500.0
+        # Basis bakes pending in: net_deposited = 1000 + 500 - 0 = 1500
+        # RH already debits/credits equity for pending transfers, so excluding
+        # them from basis would distort all_time_pnl by the pending amount.
+        assert entry["net_deposited"] == 1500.0
+        assert entry["net_cash_basis"] == 1500.0
+        # equity 1000 - basis 1500 = -500 P/L
+        assert entry["all_time_pnl"] == -500.0
 
     def test_gold_fees_deducted(self, tmp_env):
         transfers = [
@@ -301,6 +309,32 @@ class TestMainJsonMode:
         entry = json.loads((tmp_env / "outputs" / "cash_flow.jsonl").read_text().strip())
         # Voided dividend should NOT be counted
         assert entry["dividends"] == 3.5
+
+    def test_pending_dividends_excluded_from_basis(self, tmp_env):
+        """Pending future-dated dividends are visible in the events log but MUST NOT
+        inflate cost basis — otherwise displayed P/L drifts as RH schedules upcoming pays.
+        """
+        transfers = [
+            {"amount": "1000", "state": "completed", "direction": "pull",
+             "transfer_type": "ach", "created_at": "2026-01-01"},
+        ]
+        divs = [
+            {"id": "d-paid",    "amount": "2.50", "payable_date": "2026-02-01", "state": "paid"},
+            {"id": "d-pending", "amount": "99.00", "payable_date": "2026-12-31", "state": "pending"},
+        ]
+        with patch("cash_flow.requests.get", side_effect=build_mock_get(
+            transfers=transfers, divs=divs, equity=1000.0
+        )):
+            cash_flow.main(as_json=True)
+
+        snap = json.loads((tmp_env / "outputs" / "cash_flow.jsonl").read_text().strip())
+        # Only the paid one counts toward the basis snapshot
+        assert snap["dividends"] == 2.5
+        # But both events appear in the per-event log (pending visible to UI)
+        events = [json.loads(l) for l in (tmp_env / "outputs" / "cash_flow_events.jsonl").read_text().splitlines() if l.strip()]
+        kinds = [(e["kind"], e["state"]) for e in events if e["kind"] == "dividend"]
+        assert ("dividend", "paid") in kinds
+        assert ("dividend", "pending") in kinds
 
     def test_referral_grants_counted(self, tmp_env):
         transfers = [
@@ -621,3 +655,199 @@ class TestCmdBackfill:
         content = out_file.read_text()
         assert "stale" not in content
         assert "2024-03-01" in content
+
+
+# ──────────────────────────────────────────────
+# resolve_dividend_symbols
+# ──────────────────────────────────────────────
+
+class TestResolveDividendSymbols:
+    def test_resolves_and_caches(self, tmp_env):
+        divs = [
+            {"id": "d1", "instrument": "https://api.robinhood.com/instruments/abcd-1/"},
+            {"id": "d2", "instrument": "https://api.robinhood.com/instruments/abcd-2/"},
+        ]
+        def mock_get(url, headers=None, timeout=None):
+            sym = "SPY" if "abcd-1" in url else "QQQ"
+            return mock_response(200, {"symbol": sym})
+        with patch("cash_flow.requests.get", side_effect=mock_get) as get_mock:
+            cash_flow.resolve_dividend_symbols(divs, {}, log=lambda *a, **k: None)
+        assert divs[0]["_symbol"] == "SPY"
+        assert divs[1]["_symbol"] == "QQQ"
+        # Cache file written; running again hits zero HTTP
+        get_mock.reset_mock()
+        with patch("cash_flow.requests.get", side_effect=mock_get) as get_mock2:
+            cash_flow.resolve_dividend_symbols(divs, {}, log=lambda *a, **k: None)
+        assert get_mock2.call_count == 0
+
+    def test_failed_lookup_becomes_empty(self, tmp_env):
+        divs = [{"id": "d3", "instrument": "https://api.robinhood.com/instruments/xyz/"}]
+        with patch("cash_flow.requests.get",
+                   return_value=mock_response(500, {})):
+            cash_flow.resolve_dividend_symbols(divs, {}, log=lambda *a, **k: None)
+        assert divs[0]["_symbol"] == ""
+
+    def test_empty_instrument_url_skipped(self, tmp_env):
+        divs = [{"id": "d4"}]  # no instrument field
+        with patch("cash_flow.requests.get") as get_mock:
+            cash_flow.resolve_dividend_symbols(divs, {}, log=lambda *a, **k: None)
+        assert get_mock.call_count == 0
+        assert divs[0]["_symbol"] == ""
+
+
+# ──────────────────────────────────────────────
+# extract_events + merge_events_to_jsonl
+# ──────────────────────────────────────────────
+
+class TestExtractEvents:
+    def test_classifies_deposit_withdrawal_internal(self):
+        transfers = [
+            # External → RHS = deposit (even with direction=push, e.g. IRS refund)
+            {"id": "t1", "amount": "500", "state": "completed", "direction": "push",
+             "transfer_type": "non_originated_ach", "created_at": "2026-05-01",
+             "originating_account_type": "external_bank_account",
+             "receiving_account_type": "rhs_account",
+             "details": {"originator_name": "IRS REFUND"}},
+            # RHS → external + push = withdrawal
+            {"id": "t2", "amount": "200", "state": "completed", "direction": "push",
+             "transfer_type": "ach", "created_at": "2026-05-02",
+             "originating_account_type": "rhs_account",
+             "receiving_account_type": "external_bank_account"},
+            # RHS → RHS = internal
+            {"id": "t3", "amount": "1000", "state": "completed", "direction": "push",
+             "transfer_type": "internal", "created_at": "2026-05-03",
+             "originating_account_type": "rhs_account",
+             "receiving_account_type": "rhs_account"},
+        ]
+        events = cash_flow.extract_events(transfers, [], [], [])
+        kinds = {e["id"]: e["kind"] for e in events}
+        assert kinds == {
+            "transfer:t1": "deposit",
+            "transfer:t2": "withdrawal",
+            "transfer:t3": "internal",
+        }
+        # Originator carried through for the IRS row
+        irs = next(e for e in events if e["id"] == "transfer:t1")
+        assert irs["originator"] == "IRS REFUND"
+
+    def test_emits_fees_dividends_referrals(self):
+        fees = [{"id": "f1", "amount": "5", "state": "billed", "date": "2026-05-01"}]
+        divs = [{"id": "d1", "amount": "1.50", "state": "paid",
+                 "payable_date": "2026-05-02",
+                 "instrument": "https://api.robinhood.com/instruments/abcd/",
+                 "_symbol": "SPY"}]  # populated upstream by resolve_dividend_symbols
+        refs = [{"id": "r1", "created_at": "2026-05-03",
+                 "reward": {"stocks": [{"symbol": "AAPL", "cost_basis": "12.50", "state": "granted"}],
+                            "cash": {"amount": "5.00", "state": "granted"}}}]
+        events = cash_flow.extract_events([], fees, divs, refs)
+        kinds = sorted(e["kind"] for e in events)
+        assert kinds == ["dividend", "gold_fee", "referral", "referral"]
+        # Referral cash and stock get distinct ids
+        ref_ids = sorted(e["id"] for e in events if e["kind"] == "referral")
+        assert ref_ids == ["referral:r1:cash", "referral:r1:stock:0"]
+        # Dividend now carries resolved symbol + raw instrument UUID separately.
+        div = next(e for e in events if e["kind"] == "dividend")
+        assert div["symbol"] == "SPY"
+        assert div["instrument_id"] == "abcd"
+
+    def test_dividend_without_resolved_symbol_falls_back(self):
+        """When resolve_dividend_symbols hasn't run (no _symbol field), the event
+        still has a usable instrument_id for the UI to render."""
+        divs = [{"id": "d2", "amount": "1.50", "state": "paid",
+                 "payable_date": "2026-05-02",
+                 "instrument": "https://api.robinhood.com/instruments/wxyz/"}]
+        events = cash_flow.extract_events([], [], divs, [])
+        div = events[0]
+        assert div["symbol"] == ""
+        assert div["instrument_id"] == "wxyz"
+
+    def test_keeps_pending_and_failed_states(self):
+        transfers = [
+            {"id": "p1", "amount": "100", "state": "pending", "direction": "pull",
+             "transfer_type": "ach", "created_at": "2026-05-01",
+             "originating_account_type": "external_bank_account",
+             "receiving_account_type": "rhs_account"},
+            {"id": "f1", "amount": "200", "state": "failed", "direction": "pull",
+             "transfer_type": "ach", "created_at": "2026-05-02",
+             "originating_account_type": "external_bank_account",
+             "receiving_account_type": "rhs_account"},
+        ]
+        events = cash_flow.extract_events(transfers, [], [], [])
+        states = {e["id"]: e["state"] for e in events}
+        assert states == {"transfer:p1": "pending", "transfer:f1": "failed"}
+
+    def test_skips_zero_and_undated_transfers(self):
+        transfers = [
+            {"id": "x1", "amount": "0", "state": "completed", "direction": "pull",
+             "transfer_type": "ach", "created_at": "2026-05-01",
+             "originating_account_type": "external_bank_account",
+             "receiving_account_type": "rhs_account"},
+            {"id": "x2", "amount": "100", "state": "completed", "direction": "pull",
+             "transfer_type": "ach", "created_at": "",
+             "originating_account_type": "external_bank_account",
+             "receiving_account_type": "rhs_account"},
+        ]
+        assert cash_flow.extract_events(transfers, [], [], []) == []
+
+
+class TestMergeEventsToJsonl:
+    def test_writes_and_dedups_by_id(self, tmp_path):
+        path = tmp_path / "events.jsonl"
+        ev1 = [{"id": "transfer:a", "kind": "deposit", "date": "2026-05-01", "amount": 100, "state": "completed"}]
+        prior, total = cash_flow.merge_events_to_jsonl(ev1, path)
+        assert (prior, total) == (0, 1)
+        # Re-merge same event — should be idempotent
+        prior, total = cash_flow.merge_events_to_jsonl(ev1, path)
+        assert (prior, total) == (1, 1)
+        # Add a second distinct event
+        ev2 = [{"id": "transfer:b", "kind": "withdrawal", "date": "2026-05-02", "amount": 50, "state": "completed"}]
+        prior, total = cash_flow.merge_events_to_jsonl(ev2, path)
+        assert (prior, total) == (1, 2)
+
+    def test_sorts_output_by_date_then_kind(self, tmp_path):
+        path = tmp_path / "events.jsonl"
+        events = [
+            {"id": "x:1", "kind": "withdrawal", "date": "2026-05-02", "amount": 50, "state": "ok"},
+            {"id": "x:2", "kind": "deposit",    "date": "2026-05-01", "amount": 100, "state": "ok"},
+            {"id": "x:3", "kind": "internal",   "date": "2026-05-01", "amount": 25, "state": "ok"},
+        ]
+        cash_flow.merge_events_to_jsonl(events, path)
+        lines = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        assert [e["id"] for e in lines] == ["x:2", "x:3", "x:1"]
+
+    def test_latest_classification_wins_on_re_merge(self, tmp_path):
+        path = tmp_path / "events.jsonl"
+        # First write — event was 'pending'
+        cash_flow.merge_events_to_jsonl([{"id": "t:1", "kind": "deposit",
+                                          "date": "2026-05-01", "amount": 100,
+                                          "state": "pending"}], path)
+        # Second write — same id, now 'completed'. Should overwrite.
+        cash_flow.merge_events_to_jsonl([{"id": "t:1", "kind": "deposit",
+                                          "date": "2026-05-01", "amount": 100,
+                                          "state": "completed"}], path)
+        rec = json.loads(path.read_text().splitlines()[0])
+        assert rec["state"] == "completed"
+
+
+class TestMainWritesEventsFile:
+    """Integration: a normal cash_flow.py run should also produce cash_flow_events.jsonl."""
+
+    def test_main_emits_events_file(self, tmp_env):
+        transfers = [
+            {"id": "t-dep", "amount": "1000", "state": "completed", "direction": "pull",
+             "transfer_type": "ach", "created_at": "2026-05-01",
+             "originating_account_type": "external_bank_account",
+             "receiving_account_type": "rhs_account"},
+        ]
+        with patch("cash_flow.requests.get", side_effect=build_mock_get(
+            transfers=transfers, equity=1100.0
+        )):
+            cash_flow.main(as_json=True)
+
+        events_file = tmp_env / "outputs" / "cash_flow_events.jsonl"
+        assert events_file.exists()
+        events = [json.loads(l) for l in events_file.read_text().splitlines() if l.strip()]
+        assert len(events) == 1
+        assert events[0]["id"] == "transfer:t-dep"
+        assert events[0]["kind"] == "deposit"
+        assert events[0]["amount"] == 1000.0
