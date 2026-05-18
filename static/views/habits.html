@@ -1,0 +1,97 @@
+<h1>Habit Patterns</h1>
+<p class="subtitle" id="habits-sub">Loading…</p>
+
+<div class="section">
+  <div class="insight-grid" id="habits"></div>
+</div>
+
+<p style="color:#666;font-size:12px;margin-top:24px;line-height:1.6">
+  This view is the home for pattern-over-time analysis — overtrading signals, edge metrics, blowup detection, position sizing, and time-of-day P/L. Future additions (avg-down vs avg-up win rates, tilt-deposit attribution) will land here.
+</p>
+
+<script>
+(async function() {
+  const days = await apiFetch('/api/trades/daily');
+  const allTrades = await apiFetch('/api/trades?symbol=SPY');
+
+  if (!days.length) {
+    document.getElementById('habits-sub').textContent = 'No data';
+    return;
+  }
+
+  const totalTrades = days.reduce((s, d) => s + d.num_trades, 0);
+  document.getElementById('habits-sub').textContent =
+    days.length + ' trading days · ' + totalTrades + ' trades · ' + days[0].date + ' - ' + days[days.length - 1].date;
+
+  const plStr = v => v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString();
+
+  // --- Habit Insights (computed from trade-level data) ---
+  const T = allTrades.map(t => ({
+    date: t.date, pl: t.pl || 0, type: t.type, hour: t.entry_hour,
+    wl: t.wl, qty: t.qty || 1, vix: t.vix
+  }));
+
+  const avgTradesPerDay = (totalTrades / days.length).toFixed(1);
+  const greenDays = days.filter(d => d.pl > 0).length;
+  const redDays = days.filter(d => d.pl < 0).length;
+  const medianPL = [...days].sort((a, b) => a.pl - b.pl)[Math.floor(days.length / 2)].pl;
+
+  // Overtrading: days with 6+ trades
+  const heavyDays = days.filter(d => d.num_trades >= 6);
+  const heavyAvg = heavyDays.length ? Math.round(heavyDays.reduce((s, d) => s + d.pl, 0) / heavyDays.length) : 0;
+
+  // Blowup days (> $500 loss)
+  const blowups = days.filter(d => d.pl < -500);
+  const blowupTotal = blowups.reduce((s, d) => s + d.pl, 0);
+
+  // Put vs Call
+  const puts = T.filter(t => t.type === 'Put');
+  const calls = T.filter(t => t.type === 'Call');
+  const putPL = puts.reduce((s, t) => s + t.pl, 0);
+  const callPL = calls.reduce((s, t) => s + t.pl, 0);
+  const putWR = puts.length ? Math.round(puts.filter(t => t.wl === 'WIN').length / Math.max(1, puts.filter(t => t.wl !== 'BE').length) * 100) : 0;
+  const callWR = calls.length ? Math.round(calls.filter(t => t.wl === 'WIN').length / Math.max(1, calls.filter(t => t.wl !== 'BE').length) * 100) : 0;
+
+  // Morning vs afternoon
+  const morningPL = T.filter(t => t.hour != null && t.hour < 12).reduce((s, t) => s + t.pl, 0);
+  const afternoonPL = T.filter(t => t.hour != null && t.hour >= 12).reduce((s, t) => s + t.pl, 0);
+
+  // 1-lot percentage
+  const oneLots = T.filter(t => t.qty === 1).length;
+  const oneLotPct = Math.round(oneLots / Math.max(T.length, 1) * 100);
+
+  const habits = document.getElementById('habits');
+  habits.innerHTML = `
+    <div class="insight-card warn">
+      <h3>Overtrading Signal</h3>
+      <p><span class="num y">${avgTradesPerDay} trades/day</span>
+      On days with 6+ trades (${heavyDays.length} days), avg P/L is ${plStr(heavyAvg)}. More trades ≠ more profit.</p>
+    </div>
+    <div class="insight-card ${greenDays > redDays ? 'good' : 'bad'}">
+      <h3>Your Edge</h3>
+      <p><span class="num ${greenDays > redDays ? 'g' : 'r'}">${Math.round(greenDays / days.length * 100)}% winning days</span>
+      ${greenDays} green days vs ${redDays} red days. Median daily P/L: ${plStr(medianPL)}.</p>
+    </div>
+    <div class="insight-card bad">
+      <h3>Blowup Days</h3>
+      <p><span class="num r">${blowups.length} days > -$500</span>
+      Worst days cost ${plStr(blowupTotal)} total.${blowups.length ? ' Worst: ' + plStr(blowups.sort((a,b) => a.pl - b.pl)[0].pl) + ' on ' + blowups[0].date : ''}</p>
+    </div>
+    <div class="insight-card">
+      <h3>Position Sizing</h3>
+      <p><span class="num w">${oneLotPct}% of trades are 1-lot</span>
+      Biggest wins come from sizing up with conviction on high-confidence setups.</p>
+    </div>
+    <div class="insight-card ${putPL > callPL ? 'good' : 'bad'}">
+      <h3>Put vs Call</h3>
+      <p><span class="num ${putPL >= 0 ? 'g' : 'r'}">${plStr(putPL)} on puts</span>
+      vs ${plStr(callPL)} on calls. Put WR: ${putWR}%, Call WR: ${callWR}%.</p>
+    </div>
+    <div class="insight-card ${afternoonPL < 0 ? 'warn' : 'good'}">
+      <h3>Morning vs Afternoon</h3>
+      <p><span class="num ${afternoonPL >= 0 ? 'g' : 'y'}">${plStr(afternoonPL)} after noon</span>
+      Morning session (before noon): ${plStr(morningPL)}. Afternoon: ${plStr(afternoonPL)}.</p>
+    </div>
+  `;
+})();
+</script>

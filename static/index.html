@@ -7,6 +7,8 @@
 <link rel="stylesheet" href="/static/style.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<!-- TradingView Lightweight Charts — used by the calendar day modal's intraday chart. ~40KB, MIT. -->
+<script src="https://unpkg.com/lightweight-charts@4.1.7/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 
@@ -15,6 +17,8 @@
   <div class="nav-tabs">
     <a class="nav-tab active" data-view="analysis">Analysis</a>
     <a class="nav-tab" data-view="calendar">Calendar</a>
+    <a class="nav-tab" data-view="habits">Habits</a>
+    <a class="nav-tab" data-view="positions">Positions</a>
     <a class="nav-tab" data-view="pretrade">Pre-Trade</a>
     <a class="nav-tab" data-view="tradelog">Trade Log</a>
     <a class="nav-tab" data-view="portfolio">Portfolio</a>
@@ -79,6 +83,9 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
     loadView(tab.dataset.view);
   });
 });
+
+// Expose for cross-view navigation (e.g. calendar's Carried Positions → Positions tab)
+window.loadView = loadView;
 
 // Load default view
 loadView('analysis');
