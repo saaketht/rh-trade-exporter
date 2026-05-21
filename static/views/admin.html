@@ -65,6 +65,10 @@
 .adm-run-status.running { color: #fbbf24; }
 .adm-run-status.done { color: #4ade80; }
 .adm-run-status.failed { color: #f87171; }
+.adm-run-status.queued { color: #6b7280; }
+.adm-run-combined { background: #141826; border-color: #2a3252; }
+.adm-run-combined .adm-run-name { color: #fff; }
+.adm-run-divider { height: 1px; background: #20242f; margin: 4px 0 2px; }
 
 .adm-log {
   margin-top: 10px; padding: 10px 12px; max-height: 220px; overflow-y: auto;
@@ -120,10 +124,19 @@
 <div class="adm-section">
   <h2>On-demand fetch</h2>
   <p class="subtitle" style="margin-bottom:14px;font-size:12px">
-    Cron runs both at 4:05 PM ET on weekdays — these buttons are for "I traded today" or retry-after-failure.
+    Cron runs hood + cash_flow + spy_intraday + spy_daily nightly at 4:05 PM ET on weekdays — these buttons are for "I traded today" or retry-after-failure.
     Only one job at a time.
   </p>
   <div class="adm-runs" id="adm-runs">
+    <div class="adm-run-row adm-run-combined" data-script="daily_refresh">
+      <div class="adm-run-meta">
+        <span class="adm-run-name">Daily refresh</span>
+        <span class="adm-run-desc">hood → cash_flow → spy_intraday → spy_daily (abort on first failure). Per-step status mirrors into the rows below.</span>
+      </div>
+      <span class="adm-run-status">idle</span>
+      <button class="adm-btn">Run</button>
+    </div>
+    <div class="adm-run-divider"></div>
     <div class="adm-run-row" data-script="hood">
       <div class="adm-run-meta">
         <span class="adm-run-name">hood.py</span>
@@ -215,6 +228,7 @@
       detail.textContent = '.rh_token is missing — paste one below';
       probeBtn.disabled = true;
       tokenMetaEl.textContent = '';
+      applyTokenGate(true);
       return;
     }
     const secs = s.expires_in_seconds;
@@ -237,6 +251,7 @@
     }
     probeBtn.disabled = false;
     tokenMetaEl.textContent = `${s.masked} · exp ${s.exp || '?'}`;
+    applyTokenGate(light.classList.contains('red'));
 
     // Countdown ticker
     if (countdownTimer) clearInterval(countdownTimer);
@@ -305,6 +320,11 @@
   // ── Run buttons ──
   let activeJob = null;
   let pollTimer = null;
+  // For the daily_refresh combined run, track per-step state across polls so
+  // markers that have scrolled off the 4KB log_tail don't downgrade us.
+  // States: 'queued' → 'running' → 'done' | 'failed'.
+  const COMBINED_STEPS = ['hood', 'cash_flow', 'spy_intraday', 'spy_daily'];
+  let stepStates = {};
 
   function setRowState(script, label, klass) {
     const row = runs.querySelector(`[data-script="${script}"]`);
@@ -313,7 +333,7 @@
     status.textContent = label;
     status.className = 'adm-run-status ' + (klass || '');
     const btn = row.querySelector('button');
-    btn.disabled = klass === 'running';
+    btn.disabled = klass === 'running' || klass === 'queued';
   }
 
   function lockOthers(script) {
@@ -326,6 +346,61 @@
 
   function unlockAll() {
     runs.querySelectorAll('.adm-run-row button').forEach(b => b.disabled = false);
+    // Re-apply token gate so daily_refresh stays disabled if token is bad
+    if (lastStatus) applyTokenGate(
+      statusEl.querySelector('.adm-light').classList.contains('red')
+    );
+  }
+
+  function applyTokenGate(redLight) {
+    // Daily refresh starts with hood.py which needs a valid RH token; disable
+    // when the traffic light is red. Individual rows are not gated — user may
+    // legitimately want to run e.g. spy_daily without an RH token.
+    const row = runs.querySelector('[data-script="daily_refresh"]');
+    if (!row) return;
+    const btn = row.querySelector('button');
+    if (activeJob) return; // don't fight the active-job lock
+    btn.disabled = !!redLight;
+    btn.title = redLight ? 'Fix the RH token first — hood.py would fail immediately' : '';
+  }
+
+  function resetCombinedSteps() {
+    stepStates = {};
+    COMBINED_STEPS.forEach(s => {
+      stepStates[s] = 'queued';
+      setRowState(s, '⏸ queued', 'queued');
+    });
+  }
+
+  function parseStepMarkers(log) {
+    // Parse all [STEP] lines in the visible log_tail. Forward-progress only:
+    // queued → running → done/failed. END exit=0 = done, anything else = failed.
+    const lines = log.split('\n');
+    const order = { queued: 0, running: 1, done: 2, failed: 2 };
+    const advance = (name, next) => {
+      const cur = stepStates[name] || 'queued';
+      if (order[next] > order[cur]) {
+        stepStates[name] = next;
+      }
+    };
+    for (const line of lines) {
+      let m;
+      if ((m = line.match(/^\[STEP\] (\w+) START$/))) {
+        if (COMBINED_STEPS.includes(m[1])) advance(m[1], 'running');
+      } else if ((m = line.match(/^\[STEP\] (\w+) END exit=(-?\d+)$/))) {
+        if (COMBINED_STEPS.includes(m[1])) {
+          advance(m[1], parseInt(m[2], 10) === 0 ? 'done' : 'failed');
+        }
+      }
+    }
+    // Render whatever the current map says
+    for (const name of COMBINED_STEPS) {
+      const st = stepStates[name];
+      if (st === 'queued') setRowState(name, '⏸ queued', 'queued');
+      else if (st === 'running') setRowState(name, '⟳ running', 'running');
+      else if (st === 'done') setRowState(name, '✓ done', 'done');
+      else if (st === 'failed') setRowState(name, '✗ failed', 'failed');
+    }
   }
 
   async function pollJob(jobId, script) {
@@ -333,12 +408,23 @@
       const j = await apiFetch('/api/admin/run/' + jobId);
       logEl.textContent = j.log_tail || '(no output yet)';
       logEl.scrollTop = logEl.scrollHeight;
+      if (script === 'daily_refresh') {
+        parseStepMarkers(j.log_tail || '');
+      }
       if (j.state === 'running') {
         setRowState(script, '⟳ running', 'running');
         return; // keep polling
       }
       const ok = j.state === 'done';
       setRowState(script, ok ? `✓ done (${j.exit_code})` : `✗ failed (${j.exit_code})`, ok ? 'done' : 'failed');
+      if (script === 'daily_refresh') {
+        // Any step still showing 'queued' or 'running' after the parent exited
+        // means it never ran (abort path) — show that explicitly.
+        for (const name of COMBINED_STEPS) {
+          if (stepStates[name] === 'queued') setRowState(name, '— skipped', '');
+          else if (stepStates[name] === 'running') setRowState(name, '✗ failed', 'failed');
+        }
+      }
       clearInterval(pollTimer); pollTimer = null;
       activeJob = null;
       unlockAll();
@@ -361,6 +447,7 @@
     setRowState(script, '⟳ starting…', 'running');
     logEl.classList.remove('hidden');
     logEl.textContent = '';
+    if (script === 'daily_refresh') resetCombinedSteps();
     try {
       const r = await fetch('/api/admin/run', {
         method: 'POST',
@@ -387,6 +474,61 @@
     }
   });
 
+  // ── On-load restoration ──
+  // Mid-run page reload would otherwise leave the UI looking idle while the
+  // job kept running server-side. Also paints the most recent finished run's
+  // final state if it ended within the last 5 minutes — so a refresh right
+  // after completion still shows "yes it worked."
+  async function restoreFromRecentRuns() {
+    let runs;
+    try {
+      runs = await apiFetch('/api/admin/runs');
+    } catch { return; }
+    if (!Array.isArray(runs) || runs.length === 0) return;
+    const newest = runs[0]; // server returns newest first
+    if (!newest || !runs.find(r => r.script === newest.script)) return;
+    const isRunning = newest.state === 'running';
+    const RECENT_MS = 5 * 60 * 1000;
+    const endedRecently = newest.ended_at &&
+      (Date.now() - new Date(newest.ended_at).getTime() < RECENT_MS);
+    if (!isRunning && !endedRecently) return;
+
+    // Fetch detail for log_tail + step markers
+    let detail;
+    try {
+      detail = await apiFetch('/api/admin/run/' + newest.id);
+    } catch { return; }
+    const script = detail.script;
+    logEl.classList.remove('hidden');
+    logEl.textContent = detail.log_tail || '(no output yet)';
+    logEl.scrollTop = logEl.scrollHeight;
+
+    if (script === 'daily_refresh') {
+      resetCombinedSteps();
+      parseStepMarkers(detail.log_tail || '');
+    }
+
+    if (isRunning) {
+      activeJob = detail.id;
+      lockOthers(script);
+      setRowState(script, '⟳ running', 'running');
+      pollTimer = setInterval(() => pollJob(detail.id, script), 2000);
+    } else {
+      const ok = detail.state === 'done';
+      setRowState(script, ok ? `✓ done (${detail.exit_code})` : `✗ failed (${detail.exit_code})`,
+                  ok ? 'done' : 'failed');
+      // For daily_refresh, finalize child rows (skipped vs failed) the same
+      // way pollJob would on exit.
+      if (script === 'daily_refresh') {
+        for (const name of COMBINED_STEPS) {
+          if (stepStates[name] === 'queued') setRowState(name, '— skipped', '');
+          else if (stepStates[name] === 'running') setRowState(name, '✗ failed', 'failed');
+        }
+      }
+    }
+  }
+
   refreshStatus(false);
+  restoreFromRecentRuns();
 })();
 </script>
