@@ -38,6 +38,9 @@ ADMIN_SCRIPTS = {
     "spy_daily":         [sys.executable, str(BASE_DIR / "spy_daily.py")],
     "spy_intraday":      [sys.executable, str(BASE_DIR / "spy_intraday.py")],
     "spy_intraday_back": [sys.executable, str(BASE_DIR / "spy_intraday.py"), "--backfill"],
+    # Combined: runs hood → cash_flow → spy_intraday → spy_daily, abort-on-fail.
+    # Emits [STEP] markers so the UI can mirror per-step status to child rows.
+    "daily_refresh":     [sys.executable, "-u", str(BASE_DIR / "daily_refresh.py")],
 }
 
 # In-memory job table. Single-worker uvicorn assumed.
@@ -555,9 +558,37 @@ def _any_running_job() -> Optional[str]:
     return None
 
 
+JOBS_LOG_KEEP = 50  # Retain only the N most recent log files; prune at every spawn.
+
+
+def _prune_old_job_logs(keep: int = JOBS_LOG_KEEP) -> None:
+    """Delete oldest *.log files in JOBS_DIR, keeping the `keep` most recent by mtime.
+
+    Called at the start of every job spawn — amortized cost is O(N) per click,
+    negligible at our scale (<100 files). The newest file is the one we're
+    about to write, so no in-flight log can be deleted by this pass.
+    """
+    if not JOBS_DIR.exists():
+        return
+    try:
+        files = sorted(
+            (p for p in JOBS_DIR.iterdir() if p.is_file() and p.suffix == ".log"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return
+    for p in files[keep:]:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
 def _spawn_job(script: str) -> str:
     cmd = ADMIN_SCRIPTS[script]
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    _prune_old_job_logs()
     job_id = uuid.uuid4().hex[:12]
     log_path = JOBS_DIR / f"{job_id}.log"
     log_file = open(log_path, "w")
@@ -602,7 +633,7 @@ def _spawn_job(script: str) -> str:
     return job_id
 
 
-def _job_payload(job: dict, log_tail_bytes: int = 4096) -> dict:
+def _job_payload(job: dict, log_tail_bytes: int = 32768) -> dict:
     log_path = Path(job["log_path"])
     log_tail = ""
     if log_path.exists():
