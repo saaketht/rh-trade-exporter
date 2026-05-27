@@ -153,6 +153,37 @@ class TestDateSelection:
         # Mon (11) and Wed (13) should be missing; Tue (12) is cached
         assert [d.isoformat() for d in miss] == ["2026-05-11", "2026-05-13"]
 
+    def test_default_targets_monday_picks_friday(self, monkeypatch):
+        # On a Monday, "previous trading day" should be Friday (skip weekend).
+        class FakeDate(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 5, 18)  # Mon
+        monkeypatch.setattr(spy_intraday, "date", FakeDate)
+        targets = spy_intraday.default_targets()
+        assert [d.isoformat() for d in targets] == ["2026-05-15", "2026-05-18"]
+
+    def test_default_targets_weekday_picks_prev_day(self, monkeypatch):
+        # Tue–Fri: previous trading day is just yesterday.
+        class FakeDate(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 5, 20)  # Wed
+        monkeypatch.setattr(spy_intraday, "date", FakeDate)
+        targets = spy_intraday.default_targets()
+        assert [d.isoformat() for d in targets] == ["2026-05-19", "2026-05-20"]
+
+    def test_default_targets_saturday_only_friday(self, monkeypatch):
+        # Weekend runs (e.g. a manual click on Saturday) should refresh just
+        # Friday — today is a weekend, exclude it.
+        class FakeDate(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 5, 23)  # Sat
+        monkeypatch.setattr(spy_intraday, "date", FakeDate)
+        targets = spy_intraday.default_targets()
+        assert [d.isoformat() for d in targets] == ["2026-05-22"]
+
 
 # ──────────────────────────────────────────────
 # write_cache
