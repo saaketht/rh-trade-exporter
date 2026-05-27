@@ -219,6 +219,36 @@
       else { curLoss = 0; curWin = 0; }
     });
 
+    // Tier 1 KPIs: W/L ratio, avg/median daily, recovery factor, largest W/L ratio.
+    // Needs the daily P/L series sorted by date — hoist what the equity-chart block uses below.
+    const dailyByDateForKPI = {};
+    T.forEach(t => { dailyByDateForKPI[t.date] = (dailyByDateForKPI[t.date] || 0) + t.pl; });
+    const dailyDatesSortedKPI = Object.keys(dailyByDateForKPI).sort();
+    const dailyPLSeriesKPI = dailyDatesSortedKPI.map(d => dailyByDateForKPI[d]);
+
+    const wlRatio = avgLoss !== 0 ? (avgWin / Math.abs(avgLoss)).toFixed(2) : 'N/A';
+    const sortedDailyAsc = [...dailyPLs].sort((a, b) => a - b);
+    const avgDaily = dailyCount ? Math.round(totalPL / dailyCount) : 0;
+    const medianDaily = dailyCount
+      ? Math.round(
+          dailyCount % 2
+            ? sortedDailyAsc[(dailyCount - 1) / 2]
+            : (sortedDailyAsc[dailyCount/2 - 1] + sortedDailyAsc[dailyCount/2]) / 2
+        )
+      : 0;
+    // Recovery factor: total P/L ÷ max peak-to-trough drawdown on the date-ordered cum curve
+    let _peak = 0, maxDD = 0, _runCum = 0;
+    dailyPLSeriesKPI.forEach(v => {
+      _runCum += v;
+      if (_runCum > _peak) _peak = _runCum;
+      if (_peak - _runCum > maxDD) maxDD = _peak - _runCum;
+    });
+    const recoveryFactor = maxDD > 0 ? (totalPL / maxDD).toFixed(2) : 'N/A';
+    const largestWin = winPLs.length ? Math.max(...winPLs) : 0;
+    const largestLoss = lossPLs.length ? Math.min(...lossPLs) : 0;
+    const largestWLRatio = largestLoss !== 0
+      ? (largestWin / Math.abs(largestLoss)).toFixed(2) : 'N/A';
+
     const dates = [...new Set(T.map(t => t.date))].sort();
     const firstDate = dates[0] || '';
     const lastDate = dates[dates.length - 1] || '';
@@ -239,6 +269,11 @@
       ['Worst Day', plStr(worstDay), 'neg'],
       ['Max Consec. Wins', maxWin, 'pos'],
       ['Max Consec. Losses', maxLoss, 'neg'],
+      ['Win/Loss Ratio', wlRatio, parseFloat(wlRatio) >= 1 ? 'pos' : 'neg'],
+      ['Avg Daily', plStr(avgDaily), avgDaily >= 0 ? 'pos' : 'neg'],
+      ['Median Daily', plStr(medianDaily), medianDaily >= 0 ? 'pos' : 'neg'],
+      ['Recovery Factor', recoveryFactor, parseFloat(recoveryFactor) >= 2 ? 'pos' : 'neu'],
+      ['Largest W/L', largestWLRatio, parseFloat(largestWLRatio) >= 1 ? 'pos' : 'neg'],
     ].map(([l, v, c]) => `<div class="kpi"><div class="kpi-label">${l}</div><div class="kpi-value ${c}">${v}</div></div>`).join('');
 
     // Insight
