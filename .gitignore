@@ -13,6 +13,8 @@ __pycache__/
 .rh_token
 .server_token
 .rh_accounts.json
+.rh_resolved_symbols.json
 .rh_instrument_cache.json
+
 
 *.xlsx
