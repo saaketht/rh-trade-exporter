@@ -5,39 +5,7 @@
   content: "ⓘ"; position: absolute; top: 8px; right: 10px;
   font-size: 11px; color: #555;
 }
-.pf-modal-bg {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-  display: none; align-items: center; justify-content: center;
-  z-index: 1000;
-}
-.pf-modal-bg.open { display: flex; }
-.pf-modal {
-  background: #1a1d27; border-radius: 12px; padding: 28px 32px;
-  max-width: 560px; width: 90%; max-height: 85vh; overflow-y: auto;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5); border: 1px solid #2a2d3a;
-}
-.pf-modal h2 { font-size: 18px; margin-bottom: 4px; color: #fff; }
-.pf-modal .pf-sub { font-size: 12px; color: #888; margin-bottom: 20px; }
-.pf-modal .pf-row {
-  display: flex; justify-content: space-between; align-items: baseline;
-  padding: 10px 0; border-bottom: 1px solid #2a2d3a; font-size: 13px;
-}
-.pf-modal .pf-row:last-child { border-bottom: none; }
-.pf-modal .pf-row .pf-lbl { color: #aaa; }
-.pf-modal .pf-row .pf-val { color: #fff; font-weight: 600; font-variant-numeric: tabular-nums; }
-.pf-modal .pf-row.total { border-top: 2px solid #3a3d4a; margin-top: 6px; padding-top: 14px; }
-.pf-modal .pf-row.total .pf-lbl { color: #ccc; font-weight: 600; }
-.pf-modal .pf-formula {
-  background: #0f1117; border-radius: 8px; padding: 12px 14px;
-  font-family: ui-monospace, monospace; font-size: 12px; color: #aaa;
-  margin: 16px 0; line-height: 1.6; word-break: break-word;
-}
-.pf-modal .pf-close {
-  position: absolute; top: 14px; right: 18px; cursor: pointer;
-  font-size: 22px; color: #666; background: none; border: none;
-}
-.pf-modal .pf-close:hover { color: #ccc; }
-.pf-modal-wrap { position: relative; }
+/* Modal styling is shared — see .info-modal-* in style.css */
 .pf-data-note {
   font-size: 11px; color: #666; text-align: center;
   margin-top: 8px;
@@ -95,9 +63,9 @@
 <div class="grid" id="portfolio-charts"></div>
 <div class="pf-data-note" id="portfolio-data-note"></div>
 
-<div class="pf-modal-bg" id="pf-modal-bg">
-  <div class="pf-modal-wrap">
-    <div class="pf-modal" id="pf-modal"></div>
+<div class="info-modal-bg" id="pf-modal-bg">
+  <div class="info-modal-wrap">
+    <div class="info-modal" id="pf-modal"></div>
   </div>
 </div>
 
@@ -182,9 +150,16 @@
   const modal = document.getElementById('pf-modal');
 
   function openModal(html) {
-    modal.innerHTML = `<button class="pf-close" aria-label="Close">×</button>${html}`;
+    // Builders pass a leading <h2>Title</h2>; lift it into the flex header (M3),
+    // everything else scrolls in the body. Keeps the close button anchored to the card.
+    const m = html.match(/<h2>([\s\S]*?)<\/h2>/);
+    const title = m ? m[1] : '';
+    const body = html.replace(/<h2>[\s\S]*?<\/h2>/, '');
+    modal.innerHTML =
+      `<div class="info-head"><h2>${title}</h2><button class="info-close" aria-label="Close">×</button></div>` +
+      `<div class="info-body">${body}</div>`;
     modalBg.classList.add('open');
-    modal.querySelector('.pf-close').addEventListener('click', closeModal);
+    modal.querySelector('.info-close').addEventListener('click', closeModal);
   }
   function closeModal() { modalBg.classList.remove('open'); }
   modalBg.addEventListener('click', (e) => { if (e.target === modalBg) closeModal(); });
@@ -195,9 +170,9 @@
   function row(label, value, opts = {}) {
     const cls = opts.cls || '';
     const valCls = opts.color ? ` style="color:${opts.color}"` : '';
-    return `<div class="pf-row ${opts.total ? 'total' : ''}">
-      <span class="pf-lbl">${label}</span>
-      <span class="pf-val ${cls}"${valCls}>${value}</span>
+    return `<div class="info-row ${opts.total ? 'total' : ''}">
+      <span class="info-lbl">${label}</span>
+      <span class="info-val ${cls}"${valCls}>${value}</span>
     </div>`;
   }
 
@@ -219,10 +194,10 @@
             fmt$2(positions)
           );
         }).join('')
-      : `<div class="pf-row"><span class="pf-lbl" style="color:#888">Per-account breakdown not in this snapshot. Re-run <code>cash_flow.py</code> to populate.</span></div>`;
+      : `<div class="info-row"><span class="info-lbl" style="color:#888">Per-account breakdown not in this snapshot. Re-run <code>cash_flow.py</code> to populate.</span></div>`;
     openModal(`
       <h2>Current Equity</h2>
-      <div class="pf-sub">Total portfolio value across all accounts</div>
+      <div class="info-sub">Total portfolio value across all accounts</div>
       ${rows}
       ${accts.length ? row('Total equity', fmt$2(total), {total: true}) : ''}
     `);
@@ -236,18 +211,18 @@
     const depTot = (latest.deposits || 0) + (latest.deposits_pending || 0);
     openModal(`
       <h2>All-time P/L</h2>
-      <div class="pf-sub">Equity above what was invested net of income</div>
-      <div class="pf-formula">all_time_pnl = current_equity − net_cash_basis</div>
+      <div class="info-sub">Equity above what was invested net of income</div>
+      <div class="info-formula">all_time_pnl = current_equity − net_cash_basis</div>
       ${row('Current equity', fmt$2(equity))}
       ${row('Net cash basis', `−${fmt$2(basis)}`)}
       ${row('= All-time P/L', `<span class="${signCls(pnl)}">${fmt$2(pnl)} (${fmtPct(pct)})</span>`, {total: true})}
-      <div class="pf-formula">net_cash_basis = net_deposited − gold_fees + dividends + referral_grants</div>
+      <div class="info-formula">net_cash_basis = net_deposited − gold_fees + dividends + referral_grants</div>
       ${row('Net deposited' + (hasPending ? ' <span style="color:#fbbf24;font-size:11px">(incl. pending)</span>' : ''), fmt$2(latest.net_deposited || 0))}
       ${row('Gold fees', `−${fmt$2(latest.gold_fees || 0)}`)}
       ${row('Dividends', `+${fmt$2(latest.dividends || 0)}`)}
       ${row('Referral grants', `+${fmt$2(latest.referral_grants || 0)}`)}
       ${row('= Net cash basis', fmt$2(basis), {total: true})}
-      <div class="pf-sub" style="margin-top:14px">Percentage is on total deposits including pending (${fmt$2(depTot)}).</div>
+      <div class="info-sub" style="margin-top:14px">Percentage is on total deposits including pending (${fmt$2(depTot)}).</div>
     `);
   }
 
@@ -263,13 +238,13 @@
     const trPct = latest.total_return_pct || 0;
     openModal(`
       <h2>Total Return</h2>
-      <div class="pf-sub">If you cashed out today, this is your lifetime gain/loss net of every dollar moved in or out</div>
-      <div class="pf-formula">total_return = current_equity + withdrawals − deposits</div>
+      <div class="info-sub">If you cashed out today, this is your lifetime gain/loss net of every dollar moved in or out</div>
+      <div class="info-formula">total_return = current_equity + withdrawals − deposits</div>
       ${row('Current equity', fmt$2(equity))}
       ${row('Withdrawals (taken out)' + (wdP ? ' <span style="color:#fbbf24;font-size:11px">(incl. pending)</span>' : ''), `+${fmt$2(wdTot)}`)}
       ${row('Deposits (put in)' + (depP ? ' <span style="color:#fbbf24;font-size:11px">(incl. pending)</span>' : ''), `−${fmt$2(depTot)}`)}
       ${row('= Total return', `<span class="${signCls(tr)}">${fmt$2(tr)} (${fmtPct(trPct)})</span>`, {total: true})}
-      <div class="pf-sub" style="margin-top:14px">
+      <div class="info-sub" style="margin-top:14px">
         Pending transfers are included — RH already moves equity when an ACH is initiated.
         Includes fees, dividends, and referrals implicitly (they're already reflected in current equity).
         Differs from <em>All-time P/L</em>, which compares equity to a deposit-adjusted cost basis instead.
@@ -285,14 +260,14 @@
     const net = latest.net_deposited || 0;
     openModal(`
       <h2>Net Deposited</h2>
-      <div class="pf-sub">All ACH transfers in/out, including pending</div>
-      <div class="pf-formula">net_deposited = (deposits + pending) − (withdrawals + pending)</div>
+      <div class="info-sub">All ACH transfers in/out, including pending</div>
+      <div class="info-formula">net_deposited = (deposits + pending) − (withdrawals + pending)</div>
       ${row('Completed deposits', `+${fmt$2(dep)}`, {color: g})}
       ${depP ? row('Pending deposits', `+${fmt$2(depP)}`, {color: y}) : ''}
       ${row('Completed withdrawals', `−${fmt$2(wd)}`, {color: r})}
       ${wdP ? row('Pending withdrawals', `−${fmt$2(wdP)}`, {color: y}) : ''}
       ${row('= Net deposited', fmt$2(net), {total: true})}
-      <div class="pf-sub" style="margin-top:14px">
+      <div class="info-sub" style="margin-top:14px">
         ${(depP || wdP)
           ? 'Pending transfers are folded in because RH already debits/credits equity at initiation. They\'ll move to "completed" within a few days.'
           : 'No pending transfers.'}
@@ -306,11 +281,11 @@
     const net = depP - wdP;
     openModal(`
       <h2>Pending Transfers</h2>
-      <div class="pf-sub">In-flight ACH activity — included in basis, will settle within a few days</div>
+      <div class="info-sub">In-flight ACH activity — included in basis, will settle within a few days</div>
       ${row('Pending deposits', `+${fmt$2(depP)}`, {color: g})}
       ${row('Pending withdrawals', `−${fmt$2(wdP)}`, {color: r})}
       ${row('= Net pending', `<span class="${signCls(net)}">${fmt$2(net)}</span>`, {total: true})}
-      <div class="pf-sub" style="margin-top:14px">
+      <div class="info-sub" style="margin-top:14px">
         These are folded into Net Deposited / All-time P/L / Total Return because Robinhood already
         moves equity when a transfer is initiated. On the next <code>cash_flow.py</code> run they'll
         flip from "pending" to "completed" with no change to your P/L numbers.
@@ -326,8 +301,8 @@
     const total = div + ref - fees;
     openModal(`
       <h2>Lifetime Income</h2>
-      <div class="pf-sub">Money RH has paid you (or charged), separate from market gains</div>
-      <div class="pf-formula">lifetime_income = dividends + referral_grants − gold_fees</div>
+      <div class="info-sub">Money RH has paid you (or charged), separate from market gains</div>
+      <div class="info-formula">lifetime_income = dividends + referral_grants − gold_fees</div>
       ${row('Dividends', `+${fmt$2(div)}`, {color: g})}
       ${row('Referral grants', `+${fmt$2(ref)}`, {color: g})}
       ${row(`Gold subscription fees${months ? ` <span style="color:#666;font-size:11px">(${months} months)</span>` : ''}`, `−${fmt$2(fees)}`, {color: r})}

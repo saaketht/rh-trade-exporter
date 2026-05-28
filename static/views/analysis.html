@@ -82,43 +82,7 @@
 .streak-dir-pill.streak-W { background: rgba(74,222,128,0.15); color: #4ade80; }
 .streak-dir-pill.streak-L { background: rgba(248,113,113,0.15); color: #f87171; }
 
-/* ─── KPI explainer modal (M3: flex header + split scroll body) ── */
-.info-modal-bg {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-  display: none; align-items: center; justify-content: center; z-index: 1000;
-}
-.info-modal-bg.open { display: flex; }
-.info-modal-wrap { position: relative; width: 90%; max-width: 460px; }
-.info-modal {
-  background: #1a1d27; border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5); border: 1px solid #2a2d3a;
-  max-height: 85vh; display: flex; flex-direction: column;
-}
-.info-modal .info-head {
-  display: flex; justify-content: space-between; align-items: flex-start;
-  gap: 16px; padding: 22px 26px 14px; flex-shrink: 0;
-}
-.info-modal .info-head h2 { font-size: 17px; margin: 0; color: #fff; }
-.info-modal .info-body { padding: 0 26px 22px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
-.info-modal .info-formula {
-  background: #0f1117; border-radius: 8px; padding: 12px 14px;
-  font-family: ui-monospace, monospace; font-size: 12px; color: #aaa;
-  margin: 4px 0 12px; line-height: 1.6;
-}
-.info-modal .info-blurb { font-size: 13px; line-height: 1.6; color: #ccc; margin: 0; }
-.info-modal .info-link {
-  display: inline-block; margin-top: 12px; color: #818cf8;
-  font-size: 12px; text-decoration: none;
-}
-.info-modal .info-link:hover { text-decoration: underline; }
-.info-modal .info-close {
-  background: rgba(255,255,255,0.06); border: 1px solid #2a2d3a;
-  color: #bbb; font-size: 18px; cursor: pointer;
-  width: 32px; height: 32px; border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0; line-height: 1; padding: 0;
-}
-.info-modal .info-close:hover { background: rgba(255,255,255,0.14); color: #fff; }
+/* KPI explainer modal styling is shared — see .info-modal-* in style.css */
 </style>
 
 <h1>Trade Journal Analysis</h1>
