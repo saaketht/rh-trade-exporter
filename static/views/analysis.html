@@ -18,6 +18,107 @@
   background: #262938; color: #fff; border-color: #3a3d4a;
 }
 .an-span.disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ─── KPI group pills (mirrors calendar's .cal-overlay-row) ── */
+.kpi-pill-row {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+.kpi-pill-row .pill-label {
+  font-size: 11px; color: #666; text-transform: uppercase;
+  letter-spacing: 0.6px; margin-right: 2px;
+}
+.kpi-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 12px; border: 1px solid #2a2d3a; border-radius: 999px;
+  background: transparent; color: #888; font-size: 12px;
+  cursor: pointer; transition: all .12s; font-weight: 500;
+  font-family: inherit;
+}
+.kpi-pill:hover { border-color: #3a3d4a; color: #bbb; }
+.kpi-pill.active { background: #1e2230; border-color: #3a3d4a; color: #eee; }
+.kpi-pill .pill-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .4; }
+.kpi-pill.active .pill-dot { opacity: 1; }
+.kpi-pill.active .pill-dot.performance { background: #818cf8; }
+.kpi-pill.active .pill-dot.daily       { background: #4ade80; }
+.kpi-pill.active .pill-dot.streaks     { background: #fbbf24; }
+.kpi-pill .pill-count { color: #555; font-size: 10.5px; }
+.kpi-pill.active .pill-count { color: #999; }
+
+/* ─── KPI groups ─────────────────────────────────────────── */
+.kpi-group { margin-bottom: 18px; }
+.kpi-group.hidden { display: none; }
+.kpi-group-head {
+  font-size: 10px; color: #777; text-transform: uppercase;
+  letter-spacing: 0.9px; font-weight: 700; margin: 0 0 8px 2px;
+}
+
+/* Compact KPI tiles (chosen density) */
+#analysis-kpi-groups .kpi-row .kpi { padding: 11px 13px; }
+#analysis-kpi-groups .kpi-row .kpi-value { font-size: 20px; }
+#analysis-kpi-groups .kpi-row .kpi-label { font-size: 9.5px; }
+.kpi.clickable { cursor: pointer; transition: background .15s; position: relative; }
+.kpi.clickable:hover { background: #20242f; }
+.kpi.clickable::after {
+  content: "ⓘ"; position: absolute; top: 7px; right: 9px;
+  font-size: 10px; color: #555;
+}
+
+/* Combo tiles — two values side-by-side in one box */
+.kpi.kpi-combo .kpi-value {
+  display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: baseline; gap: 6px; font-size: 17px;
+}
+.kpi.kpi-combo .kpi-sep { color: #3a3d4a; font-weight: 400; font-size: 13px; }
+.kpi.kpi-combo .kpi-half-l { text-align: right; }
+.kpi.kpi-combo .kpi-half-r { text-align: left; }
+
+/* Current-streak direction pill (W/L) appended to the tile value */
+.streak-dir-pill {
+  display: inline-block; margin-left: 6px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+  padding: 2px 6px; border-radius: 4px; vertical-align: 2px;
+}
+.streak-dir-pill.streak-W { background: rgba(74,222,128,0.15); color: #4ade80; }
+.streak-dir-pill.streak-L { background: rgba(248,113,113,0.15); color: #f87171; }
+
+/* ─── KPI explainer modal (M3: flex header + split scroll body) ── */
+.info-modal-bg {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: none; align-items: center; justify-content: center; z-index: 1000;
+}
+.info-modal-bg.open { display: flex; }
+.info-modal-wrap { position: relative; width: 90%; max-width: 460px; }
+.info-modal {
+  background: #1a1d27; border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5); border: 1px solid #2a2d3a;
+  max-height: 85vh; display: flex; flex-direction: column;
+}
+.info-modal .info-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 16px; padding: 22px 26px 14px; flex-shrink: 0;
+}
+.info-modal .info-head h2 { font-size: 17px; margin: 0; color: #fff; }
+.info-modal .info-body { padding: 0 26px 22px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+.info-modal .info-formula {
+  background: #0f1117; border-radius: 8px; padding: 12px 14px;
+  font-family: ui-monospace, monospace; font-size: 12px; color: #aaa;
+  margin: 4px 0 12px; line-height: 1.6;
+}
+.info-modal .info-blurb { font-size: 13px; line-height: 1.6; color: #ccc; margin: 0; }
+.info-modal .info-link {
+  display: inline-block; margin-top: 12px; color: #818cf8;
+  font-size: 12px; text-decoration: none;
+}
+.info-modal .info-link:hover { text-decoration: underline; }
+.info-modal .info-close {
+  background: rgba(255,255,255,0.06); border: 1px solid #2a2d3a;
+  color: #bbb; font-size: 18px; cursor: pointer;
+  width: 32px; height: 32px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; line-height: 1; padding: 0;
+}
+.info-modal .info-close:hover { background: rgba(255,255,255,0.14); color: #fff; }
 </style>
 
 <h1>Trade Journal Analysis</h1>
@@ -42,11 +143,46 @@
   <button class="an-span" data-span="ALL">ALL</button>
 </div>
 
-<div class="kpi-row" id="analysis-kpis"></div>
+<div id="analysis-kpi-groups" style="display:none">
+  <div class="kpi-pill-row">
+    <span class="pill-label">Show</span>
+    <button class="kpi-pill active" data-group-toggle="performance">
+      <span class="pill-dot performance"></span> Performance
+      <span class="pill-count" data-group-count="performance"></span>
+    </button>
+    <button class="kpi-pill active" data-group-toggle="daily">
+      <span class="pill-dot daily"></span> Daily Distribution
+      <span class="pill-count" data-group-count="daily"></span>
+    </button>
+    <button class="kpi-pill active" data-group-toggle="streaks">
+      <span class="pill-dot streaks"></span> Streaks &amp; Extremes
+      <span class="pill-count" data-group-count="streaks"></span>
+    </button>
+  </div>
+
+  <div class="kpi-group" data-group-name="performance">
+    <div class="kpi-group-head">Performance</div>
+    <div class="kpi-row" data-group="performance"></div>
+  </div>
+  <div class="kpi-group" data-group-name="daily">
+    <div class="kpi-group-head">Daily Distribution</div>
+    <div class="kpi-row" data-group="daily"></div>
+  </div>
+  <div class="kpi-group" data-group-name="streaks">
+    <div class="kpi-group-head">Streaks &amp; Extremes</div>
+    <div class="kpi-row" data-group="streaks"></div>
+  </div>
+</div>
 
 <div class="insight" id="analysis-insight" style="display:none">
   <h3>Key Findings</h3>
   <p id="analysis-insight-text"></p>
+</div>
+
+<div class="info-modal-bg" id="kpi-modal-bg">
+  <div class="info-modal-wrap">
+    <div class="info-modal" id="kpi-modal"></div>
+  </div>
 </div>
 
 <div class="grid">
@@ -136,6 +272,100 @@
     });
   }
 
+  // ─── KPI grouping + combo + explainer metadata ──────────────
+  const KPI_GROUPS = {
+    performance: ['total-pl', 'win-rate', 'profit-factor', 'expectancy', 'wl-ratio'],
+    daily:       ['avg-daily', 'median-daily', 'best-day', 'worst-day', 'recovery'],
+    streaks:     ['max-w-streak', 'max-l-streak', 'avg-win', 'avg-loss', 'current-streak', 'largest-wl'],
+  };
+  // [comboSlug, label, leftSlug, rightSlug, hint]
+  const KPI_COMBOS = [
+    ['daily-pl-combo', 'Daily P/L',        'avg-daily',    'median-daily', 'avg / median'],
+    ['extremes-combo', 'Best / Worst Day', 'best-day',     'worst-day',    ''],
+    ['streaks-combo',  'Streak (Max W / L)','max-w-streak','max-l-streak', ''],
+    ['winloss-combo',  'Avg Win / Loss',   'avg-win',      'avg-loss',     ''],
+  ];
+  const KPI_INFO = {
+    'profit-factor': { title: 'Profit Factor', formula: 'Σ winning P/L  ÷  |Σ losing P/L|',
+      blurb: 'Dollars made per dollar lost. >1 means net profitable; >1.5 is solid; >2 is strong.',
+      link: { label: 'Investopedia: Profit Factor', url: 'https://www.investopedia.com/terms/p/profit-factor.asp' } },
+    'expectancy': { title: 'Expectancy', formula: '(win rate × avg win) − (loss rate × |avg loss|)',
+      blurb: 'Expected dollars per trade over the long run. Negative means your edge is upside-down at current sizing.' },
+    'recovery': { title: 'Recovery Factor', formula: 'Total P/L  ÷  Max peak-to-trough drawdown',
+      blurb: 'How many "max drawdowns" of profit you have on the books. >2 healthy; <1 means your worst stretch was deeper than your total profit.' },
+    'wl-ratio': { title: 'Win/Loss Ratio (Payoff Ratio)', formula: 'Avg winning trade  ÷  |Avg losing trade|',
+      blurb: 'Reward-to-risk per trade. Combine with win rate: to break even you need WR > 1 / (1 + W/L).',
+      link: { label: 'Investopedia: Win/Loss Ratio', url: 'https://www.investopedia.com/terms/w/win-loss-ratio.asp' } },
+    'largest-wl': { title: 'Largest Winner / Loser Ratio', formula: 'Largest single winner  ÷  |Largest single loser|',
+      blurb: 'Tail diagnostic. <1 means your worst trade was bigger than your best — usually a sign stops weren\'t honored.' },
+    'avg-daily': { title: 'Avg Daily P/L', formula: 'Total P/L  ÷  # trading days',
+      blurb: 'Mean daily outcome. Sensitive to outliers — compare with Median Daily to see if a handful of days are carrying the curve.' },
+    'median-daily': { title: 'Median Daily P/L', formula: 'Middle value of date-ordered daily P/L',
+      blurb: 'The typical day. If avg ≫ median, your edge is concentrated in a few big days (positive skew). If avg ≪ median, big losers are dragging the average.' },
+    'daily-pl-combo': { title: 'Daily P/L (Avg / Median)', formula: 'Avg = total ÷ # days · Median = middle value',
+      blurb: 'Shown together because the gap between them is the skew signal. Wide gap = a few outlier days dominating. Tight gap = consistent.' },
+    'extremes-combo': { title: 'Best / Worst Day', formula: 'Max(daily P/L) · Min(daily P/L)',
+      blurb: 'The two tails of your daily distribution. Useful for sizing context and risk awareness.' },
+    'streaks-combo': { title: 'Streaks (Wins / Losses)', formula: 'Longest consecutive WIN/LOSS run',
+      blurb: 'Psychological pressure indicators. Long loss streaks even at positive expectancy are normal — knowing your max helps you stomach them.' },
+    'winloss-combo': { title: 'Avg Win / Avg Loss', formula: 'Σ wins ÷ N wins  ·  Σ losses ÷ N losses',
+      blurb: 'Shown together so you can eyeball the asymmetry. The ratio is the Win/Loss Ratio tile; the absolute dollars tell you whether you\'re scalper-sized or swing-sized.' },
+    'current-streak': { title: 'Current Streak', formula: 'Consecutive same-outcome trades ending at the latest',
+      blurb: 'Only shown when ≥ 2. Knowing you\'re on a 4L run can prompt a session pause; a 4W run can prompt size discipline.' },
+  };
+
+  // ─── Group visibility pills (persisted) ─────────────────────
+  const KPI_GROUP_KEY = 'an-kpi-groups-hidden';
+  function loadHiddenGroups() {
+    try { return new Set(JSON.parse(localStorage.getItem(KPI_GROUP_KEY) || '[]')); }
+    catch { return new Set(); }
+  }
+  const hiddenGroups = loadHiddenGroups();
+  function applyGroupVisibility() {
+    document.querySelectorAll('#analysis-kpi-groups [data-group-name]').forEach(el => {
+      el.classList.toggle('hidden', hiddenGroups.has(el.dataset.groupName));
+    });
+    document.querySelectorAll('#analysis-kpi-groups .kpi-pill[data-group-toggle]').forEach(pill => {
+      pill.classList.toggle('active', !hiddenGroups.has(pill.dataset.groupToggle));
+    });
+  }
+  document.querySelectorAll('#analysis-kpi-groups .kpi-pill[data-group-toggle]').forEach(pill => {
+    pill.addEventListener('click', () => {
+      const name = pill.dataset.groupToggle;
+      if (hiddenGroups.has(name)) hiddenGroups.delete(name); else hiddenGroups.add(name);
+      localStorage.setItem(KPI_GROUP_KEY, JSON.stringify([...hiddenGroups]));
+      applyGroupVisibility();
+    });
+  });
+
+  // ─── KPI explainer modal ────────────────────────────────────
+  const kpiModalBg = document.getElementById('kpi-modal-bg');
+  const kpiModal = document.getElementById('kpi-modal');
+  function openKpiInfo(slug) {
+    const info = KPI_INFO[slug];
+    if (!info) return;
+    kpiModal.innerHTML = `
+      <div class="info-head">
+        <h2>${info.title}</h2>
+        <button class="info-close" aria-label="Close">×</button>
+      </div>
+      <div class="info-body">
+        <div class="info-formula">${info.formula}</div>
+        <p class="info-blurb">${info.blurb}</p>
+        ${info.link ? `<a class="info-link" href="${info.link.url}" target="_blank" rel="noopener">${info.link.label} →</a>` : ''}
+      </div>`;
+    kpiModalBg.classList.add('open');
+    kpiModal.querySelector('.info-close').addEventListener('click', closeKpiInfo);
+  }
+  function closeKpiInfo() { kpiModalBg.classList.remove('open'); }
+  kpiModalBg.addEventListener('click', e => { if (e.target === kpiModalBg) closeKpiInfo(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeKpiInfo(); });
+  // Delegated tile clicks (survives innerHTML rebuilds)
+  document.getElementById('analysis-kpi-groups').addEventListener('click', e => {
+    const tile = e.target.closest('.kpi.clickable');
+    if (tile && tile.dataset.kpi) openKpiInfo(tile.dataset.kpi);
+  });
+
   async function render(symbol) {
     const url = symbol ? '/api/trades?symbol=' + symbol : '/api/trades';
     const fetched = await apiFetch(url);
@@ -143,7 +373,7 @@
       document.getElementById('analysis-sub').textContent = 'No trades found';
       document.getElementById('analysis-span-row').style.display = 'none';
       // Clear KPIs and charts
-      document.getElementById('analysis-kpis').innerHTML = '';
+      document.getElementById('analysis-kpi-groups').style.display = 'none';
       charts.forEach(c => c.destroy()); charts.length = 0;
       return;
     }
@@ -164,7 +394,7 @@
     if (!T.length) {
       document.getElementById('analysis-sub').textContent =
         `No trades in selected range (${activeSpan})`;
-      document.getElementById('analysis-kpis').innerHTML = '';
+      document.getElementById('analysis-kpi-groups').style.display = 'none';
       document.getElementById('analysis-insight').style.display = 'none';
       return;
     }
@@ -255,26 +485,87 @@
     document.getElementById('analysis-sub').textContent =
       T.length + ' trades \u00b7 ' + firstDate + ' \u2013 ' + lastDate;
 
-    // KPIs
+    // Current streak: consecutive same-outcome trades ending at the latest.
+    // T is chronological (cumulative loop above relies on it). BE breaks a streak.
+    let _csDir = null, _csCount = 0;
+    for (let i = T.length - 1; i >= 0; i--) {
+      const wl = T[i].wl;
+      if (wl !== 'WIN' && wl !== 'LOSS') break;
+      const dir = wl === 'WIN' ? 'W' : 'L';
+      if (_csDir === null) { _csDir = dir; _csCount = 1; }
+      else if (dir === _csDir) { _csCount++; }
+      else break;
+    }
+    const currentStreak = (_csDir && _csCount >= 2) ? { dir: _csDir, count: _csCount } : null;
+
+    // KPIs — slug → [label, valueStr, colorClass]
     const plStr = v => v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString();
-    const kpiRow = document.getElementById('analysis-kpis');
-    kpiRow.innerHTML = [
-      ['Total P/L', plStr(totalPL), totalPL >= 0 ? 'pos' : 'neg'],
-      ['Win Rate', wr + '%', 'neu'],
-      ['Avg Win', plStr(avgWin), 'pos'],
-      ['Avg Loss', plStr(Math.abs(avgLoss)), 'neg'],
-      ['Profit Factor', pf, parseFloat(pf) >= 1 ? 'pos' : 'neg'],
-      ['Expectancy', plStr(expectancy), expectancy >= 0 ? 'pos' : 'neg'],
-      ['Best Day', plStr(bestDay), 'pos'],
-      ['Worst Day', plStr(worstDay), 'neg'],
-      ['Max Consec. Wins', maxWin, 'pos'],
-      ['Max Consec. Losses', maxLoss, 'neg'],
-      ['Win/Loss Ratio', wlRatio, parseFloat(wlRatio) >= 1 ? 'pos' : 'neg'],
-      ['Avg Daily', plStr(avgDaily), avgDaily >= 0 ? 'pos' : 'neg'],
-      ['Median Daily', plStr(medianDaily), medianDaily >= 0 ? 'pos' : 'neg'],
-      ['Recovery Factor', recoveryFactor, parseFloat(recoveryFactor) >= 2 ? 'pos' : 'neu'],
-      ['Largest W/L', largestWLRatio, parseFloat(largestWLRatio) >= 1 ? 'pos' : 'neg'],
-    ].map(([l, v, c]) => `<div class="kpi"><div class="kpi-label">${l}</div><div class="kpi-value ${c}">${v}</div></div>`).join('');
+    const KV = {
+      'total-pl':      ['Total P/L', plStr(totalPL), totalPL >= 0 ? 'pos' : 'neg'],
+      'win-rate':      ['Win Rate', wr + '%', 'neu'],
+      'profit-factor': ['Profit Factor', pf, parseFloat(pf) >= 1 ? 'pos' : 'neg'],
+      'expectancy':    ['Expectancy', plStr(expectancy), expectancy >= 0 ? 'pos' : 'neg'],
+      'wl-ratio':      ['Win/Loss Ratio', wlRatio, parseFloat(wlRatio) >= 1 ? 'pos' : 'neg'],
+      'avg-daily':     ['Avg Daily', plStr(avgDaily), avgDaily >= 0 ? 'pos' : 'neg'],
+      'median-daily':  ['Median Daily', plStr(medianDaily), medianDaily >= 0 ? 'pos' : 'neg'],
+      'best-day':      ['Best Day', plStr(bestDay), 'pos'],
+      'worst-day':     ['Worst Day', plStr(worstDay), 'neg'],
+      'recovery':      ['Recovery Factor', recoveryFactor, parseFloat(recoveryFactor) >= 2 ? 'pos' : 'neu'],
+      'max-w-streak':  ['Max Consec. Wins', maxWin, 'pos'],
+      'max-l-streak':  ['Max Consec. Losses', maxLoss, 'neg'],
+      'avg-win':       ['Avg Win', plStr(avgWin), 'pos'],
+      'avg-loss':      ['Avg Loss', plStr(Math.abs(avgLoss)), 'neg'],
+      'largest-wl':    ['Largest W/L', largestWLRatio, parseFloat(largestWLRatio) >= 1 ? 'pos' : 'neg'],
+    };
+
+    function tileHTML(slug) {
+      if (slug === 'current-streak') {
+        if (!currentStreak) return '';
+        const cls = currentStreak.dir === 'W' ? 'pos' : 'neg';
+        return `<div class="kpi clickable" data-kpi="current-streak">
+          <div class="kpi-label">Current Streak</div>
+          <div class="kpi-value ${cls}">${currentStreak.count}<span class="streak-dir-pill streak-${currentStreak.dir}">${currentStreak.dir}</span></div></div>`;
+      }
+      const k = KV[slug]; if (!k) return '';
+      const [label, val, cls] = k;
+      const clickable = KPI_INFO[slug] ? ' clickable' : '';
+      return `<div class="kpi${clickable}" data-kpi="${slug}">
+        <div class="kpi-label">${label}</div><div class="kpi-value ${cls}">${val}</div></div>`;
+    }
+    function comboTileHTML(c) {
+      const [slug, label, ls, rs, hint] = c;
+      const l = KV[ls], r = KV[rs];
+      return `<div class="kpi kpi-combo clickable" data-kpi="${slug}">
+        <div class="kpi-label">${label}${hint ? ' <span style="color:#555">(' + hint + ')</span>' : ''}</div>
+        <div class="kpi-value">
+          <span class="kpi-half-l ${l[2]}">${l[1]}</span>
+          <span class="kpi-sep">/</span>
+          <span class="kpi-half-r ${r[2]}">${r[1]}</span>
+        </div></div>`;
+    }
+    function renderGroup(slugs) {
+      const live = slugs.filter(s => s !== 'current-streak' || currentStreak);
+      const consumed = new Set(); const out = [];
+      for (const slug of live) {
+        if (consumed.has(slug)) continue;
+        const combo = KPI_COMBOS.find(c => (c[2] === slug || c[3] === slug)
+          && live.includes(c[2]) && live.includes(c[3]));
+        if (combo) { out.push(comboTileHTML(combo)); consumed.add(combo[2]); consumed.add(combo[3]); }
+        else { out.push(tileHTML(slug)); consumed.add(slug); }
+      }
+      return out.join('');
+    }
+
+    document.getElementById('analysis-kpi-groups').style.display = '';
+    for (const [g, slugs] of Object.entries(KPI_GROUPS)) {
+      document.querySelector(`#analysis-kpi-groups [data-group="${g}"]`).innerHTML = renderGroup(slugs);
+      const countEl = document.querySelector(`#analysis-kpi-groups [data-group-count="${g}"]`);
+      if (countEl) {
+        const n = document.querySelectorAll(`#analysis-kpi-groups [data-group="${g}"] > .kpi`).length;
+        countEl.textContent = `· ${n}`;
+      }
+    }
+    applyGroupVisibility();
 
     // Insight
     const puts = T.filter(t => t.type === 'Put');
