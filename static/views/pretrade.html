@@ -1,13 +1,85 @@
 <h1>Pre-Trade Reference</h1>
 <p class="page-sub">Historical performance breakdowns to check before trading</p>
 
-<div class="checklist">
+<div class="checklist" id="pt-checklist">
   <h3>Before you trade</h3>
-  <div class="checklist-item">What's the VIX at right now?</div>
-  <div class="checklist-item">Is there a gap up or gap down from yesterday's close?</div>
-  <div class="checklist-item">Am I trading puts (my edge) or calls (my leak)?</div>
-  <div class="checklist-item">Max 4 trades today — will I actually stop?</div>
+  <div id="cl-banner" class="cl-banner neutral"></div>
+  <div id="cl-items"></div>
 </div>
+
+<script>
+(function() {
+  // Evidence-backed rules (see plans/loop-since-4-15.md). Gated items are yes/no the
+  // trader complies with: ✅ = complying, 🚫 = violating. The last is informational.
+  const ITEMS = [
+    { id: 'time',  gated: true,  tag: '10:00 window',  text: 'Is it ~10:00? My only green window — 9:00 / 11:00 bleed.' },
+    { id: 'press', gated: true,  tag: 'no pressing',   text: 'Won yesterday or already today? Then size stays flat — no pressing.' },
+    { id: 'count', gated: true,  tag: '≤2 trades', text: 'Capping at 1–2 trades today. (8+ = a guaranteed red day)' },
+    { id: 'size',  gated: true,  tag: '1–2 contracts', text: 'Starting at 1–2 contracts, not 4+.' },
+    { id: 'stop',  gated: true,  tag: '30-min stop',   text: '30-MIN RULE: red at 30 min → cut it. (I rescue held losers ~6% of the time)' },
+    { id: 'edge',  gated: false,                       text: 'No fixed put/call edge right now — both bleed when held too long.' },
+  ];
+
+  // Per-day key (ET) so the checklist auto-resets each trading day.
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
+  const KEY = 'pretrade_check_' + today;
+
+  // Keep only the 5 most recent days of state.
+  try {
+    const keys = Object.keys(localStorage).filter(k => k.startsWith('pretrade_check_')).sort();
+    while (keys.length > 5) localStorage.removeItem(keys.shift());
+  } catch (e) {}
+
+  let state = {};
+  try { state = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { state = {}; }
+
+  const itemsEl = document.getElementById('cl-items');
+  const bannerEl = document.getElementById('cl-banner');
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} };
+
+  function set(id, val) {
+    state[id] = (state[id] === val) ? null : val; // click same control again to clear
+    save(); render();
+  }
+
+  function render() {
+    itemsEl.innerHTML = ITEMS.map(it => {
+      if (!it.gated) {
+        return `<div class="cl-item info"><span class="cl-mark">ℹ️</span><span class="cl-text">${it.text}</span></div>`;
+      }
+      const st = state[it.id];
+      const cls = st === 'yes' ? 'is-yes' : st === 'no' ? 'is-no' : '';
+      return `<div class="cl-item ${cls}">
+        <span class="cl-text">${it.text}</span>
+        <span class="cl-ctrls">
+          <button class="cl-btn yes" data-id="${it.id}" data-val="yes" title="Complying">✅</button>
+          <button class="cl-btn no" data-id="${it.id}" data-val="no" title="Breaking this rule">🚫</button>
+        </span>
+      </div>`;
+    }).join('');
+
+    itemsEl.querySelectorAll('.cl-btn').forEach(b => {
+      b.onclick = () => set(b.dataset.id, b.dataset.val);
+    });
+
+    const gated = ITEMS.filter(i => i.gated);
+    const broken = gated.filter(i => state[i.id] === 'no');
+    const yes = gated.filter(i => state[i.id] === 'yes');
+    if (broken.length) {
+      bannerEl.className = 'cl-banner warn';
+      bannerEl.textContent = '⚠️ Breaking your own rules: ' + broken.map(i => i.tag).join(', ');
+    } else if (yes.length === gated.length) {
+      bannerEl.className = 'cl-banner ok';
+      bannerEl.textContent = '✅ Cleared to trade — all rules checked.';
+    } else {
+      bannerEl.className = 'cl-banner neutral';
+      bannerEl.textContent = 'Complete your pre-trade check (' + yes.length + '/' + gated.length + ' confirmed).';
+    }
+  }
+
+  render();
+})();
+</script>
 
 <div class="tabs" id="pt-tabs">
   <div class="tab active" data-view="dow">Day of Week</div>
