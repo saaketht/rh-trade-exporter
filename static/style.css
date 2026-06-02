@@ -124,6 +124,23 @@ h1{font-size:24px;font-weight:700;color:#fff;margin-bottom:4px}
 .checklist h3{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:#555;margin-bottom:10px}
 .checklist-item{font-size:13px;color:#999;padding:6px 0;display:flex;align-items:center;gap:8px}
 .checklist-item::before{content:'';width:14px;height:14px;border:1.5px solid #3a3d4a;border-radius:4px;flex-shrink:0}
+/* interactive per-day guardrail checklist */
+.cl-banner{font-size:12px;font-weight:600;padding:8px 10px;border-radius:6px;margin-bottom:10px;border:1px solid transparent}
+.cl-banner.neutral{background:#1f2330;color:#888;border-color:#2a2d3a}
+.cl-banner.ok{background:#0f2a18;color:#4ade80;border-color:#1f5132}
+.cl-banner.warn{background:#2e1416;color:#f87171;border-color:#5c2226}
+.cl-item{font-size:13px;color:#bbb;padding:7px 0;display:flex;align-items:center;gap:10px;border-top:1px solid #23262f}
+.cl-item:first-child{border-top:none}
+.cl-item.info{color:#777;font-style:italic}
+.cl-item .cl-text{flex:1}
+.cl-item.is-yes .cl-text{color:#cfe9d6}
+.cl-item.is-no .cl-text{color:#f87171}
+.cl-mark{flex-shrink:0;opacity:.7}
+.cl-ctrls{display:flex;gap:4px;flex-shrink:0}
+.cl-btn{background:#23262f;border:1px solid #2f3340;border-radius:6px;padding:2px 7px;font-size:13px;line-height:1.4;cursor:pointer;opacity:.45;transition:opacity .12s,background .12s}
+.cl-btn:hover{opacity:.85}
+.cl-item.is-yes .cl-btn.yes{opacity:1;background:#14401f;border-color:#2f7a45}
+.cl-item.is-no .cl-btn.no{opacity:1;background:#401417;border-color:#7a2f35}
 
 /* === Trade Log (ag-Grid) === */
 .log-controls{display:flex;gap:12px;align-items:center;margin-bottom:16px}
