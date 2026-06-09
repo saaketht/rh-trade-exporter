@@ -1445,11 +1445,17 @@
             if (e.direction === 'avg-down')      noteDetail = `(🔻 avg-down ${(e.basisBefore - e.price).toFixed(2)}, basis was ${fmtPrice(e.basisBefore)})`;
             else if (e.direction === 'avg-up')   noteDetail = `(🔺 avg-up ${(e.price - e.basisBefore).toFixed(2)}, basis was ${fmtPrice(e.basisBefore)})`;
             else                                  noteDetail = `(➕ flat, same as basis ${fmtPrice(e.basisBefore)})`;
-          } else if (e.kind === 'scale-out' || e.kind === 'close') {
+          } else if (e.kind === 'scale-out') {
+            // Partial exit while the position is still open — the lock-gains / cut-losses
+            // framing carries real intent here (you chose to trim a runner / a loser).
             noteLabel = e.kind;
             if (e.outcome === 'profit')      noteDetail = `(lock gains ${fmtPL(e.pl)})`;
             else if (e.outcome === 'loss')   noteDetail = `(cut losses ${fmtPL(e.pl)})`;
             else                              noteDetail = `(flat)`;
+          } else if (e.kind === 'close') {
+            // Full exit. No parenthetical: the +$/-$ on the right and the row color
+            // already convey win/loss, and the "close" verb already says you exited.
+            noteLabel = e.kind;
           }
           const sign = (e.kind === 'open' || e.kind === 'add') ? '+' : '−';
           const plPart = (e.kind === 'close' || e.kind === 'scale-out') && e.pl
