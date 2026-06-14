@@ -74,12 +74,13 @@ class TestClassifyOrders:
 # ──────────────────────────────────────────────
 def _make_exec(position_effect, side, qty, price, ts_offset_min=0,
                option_url="https://api.robinhood.com/options/instruments/AAA/",
-               chain_symbol="SPY", option_type="call", strike=580.0, expiry="2026-03-20"):
+               chain_symbol="SPY", option_type="call", strike=580.0, expiry="2026-03-20",
+               order_id="order1", ts_offset_sec=0):
     """Helper to build a fake execution dict."""
     base = datetime(2026, 3, 20, 14, 0, tzinfo=timezone.utc)
     return {
-        "order_id": "order1",
-        "dt": base + timedelta(minutes=ts_offset_min),
+        "order_id": order_id,
+        "dt": base + timedelta(minutes=ts_offset_min, seconds=ts_offset_sec),
         "position_effect": position_effect,
         "side": side,
         "quantity": qty,
@@ -110,19 +111,67 @@ class TestPairIntoTradeRows:
         assert r["hold_min"] == 5
 
     def test_partial_close(self):
-        """Open 3, close 2 then 1 → 2 rows."""
+        """Open 3, then scale out 2 then 1 via two SEPARATE close orders → 2 rows.
+
+        Runs the real pipeline (aggregate → pair). The two closes have distinct
+        order_ids (genuine scale-out), so aggregation keeps them separate.
+        """
         execs = [
-            _make_exec("open", "buy", 3, 1.50, ts_offset_min=0),
-            _make_exec("close", "sell", 2, 2.00, ts_offset_min=10),
-            _make_exec("close", "sell", 1, 2.50, ts_offset_min=20),
+            _make_exec("open", "buy", 3, 1.50, ts_offset_min=0, order_id="o_open"),
+            _make_exec("close", "sell", 2, 2.00, ts_offset_min=10, order_id="o_close1"),
+            _make_exec("close", "sell", 1, 2.50, ts_offset_min=20, order_id="o_close2"),
         ]
-        rows, unmatched = hood.pair_into_trade_rows(execs)
+        rows, unmatched = hood.pair_into_trade_rows(hood.aggregate_executions_by_order(execs))
         assert len(rows) == 2
         assert len(unmatched) == 0
         # Same group ID for both (same entry)
         assert rows[0]["group_id"] == rows[1]["group_id"]
         assert rows[0]["quantity"] == 2
         assert rows[1]["quantity"] == 1
+
+    def test_aggregates_fragmented_order(self):
+        """One buy order filled in 4 partial executions + one sell order in 2 →
+        aggregation collapses to 1 lot each → a single row, qty summed, P/L summed."""
+        execs = [
+            # one open order, 4 fills within seconds at varying prices
+            _make_exec("open", "buy", 3, 1.00, ts_offset_sec=0, order_id="o_open"),
+            _make_exec("open", "buy", 3, 1.20, ts_offset_sec=1, order_id="o_open"),
+            _make_exec("open", "buy", 2, 1.10, ts_offset_sec=2, order_id="o_open"),
+            _make_exec("open", "buy", 2, 1.30, ts_offset_sec=3, order_id="o_open"),
+            # one close order, 2 fills
+            _make_exec("close", "sell", 6, 1.50, ts_offset_min=10, order_id="o_close"),
+            _make_exec("close", "sell", 4, 1.50, ts_offset_min=10, order_id="o_close"),
+        ]
+        agg = hood.aggregate_executions_by_order(execs)
+        # 1 open lot (qty 10) + 1 close lot (qty 10)
+        assert len(agg) == 2
+        open_lot = next(e for e in agg if e["position_effect"] == "open")
+        assert open_lot["quantity"] == 10
+        # VWAP = (3*1.00 + 3*1.20 + 2*1.10 + 2*1.30) / 10 = 11.4/10 = 1.14
+        assert open_lot["price_per_share"] == pytest.approx(1.14)
+
+        rows, unmatched = hood.pair_into_trade_rows(agg)
+        assert len(rows) == 1
+        assert len(unmatched) == 0
+        r = rows[0]
+        assert r["quantity"] == 10
+        assert r["entry_cost"] == pytest.approx(1140.0)   # 1.14 * 10 * 100
+        assert r["exit_credit"] == pytest.approx(1500.0)  # 1.50 * 10 * 100
+        assert r["pl"] == pytest.approx(360.0)
+
+    def test_avg_down_two_orders(self):
+        """Two separate open orders (entry + average-down) on the same contract,
+        then one close → 2 rows with 2 distinct Group IDs (one per entry decision)."""
+        execs = [
+            _make_exec("open", "buy", 10, 1.00, ts_offset_min=0, order_id="o_entry"),
+            _make_exec("open", "buy", 7, 0.50, ts_offset_min=50, order_id="o_avgdown"),
+            _make_exec("close", "sell", 17, 0.70, ts_offset_min=60, order_id="o_close"),
+        ]
+        rows, unmatched = hood.pair_into_trade_rows(hood.aggregate_executions_by_order(execs))
+        assert len(rows) == 2
+        assert len(unmatched) == 0
+        assert rows[0]["group_id"] != rows[1]["group_id"]
+        assert {r["quantity"] for r in rows} == {10, 7}
 
     def test_unmatched_open(self):
         """Open with no close → unmatched."""
