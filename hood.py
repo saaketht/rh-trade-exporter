@@ -438,6 +438,58 @@ def parse_executions(orders: list[dict], headers: dict) -> list[dict]:
     return executions
 
 
+def aggregate_executions_by_order(executions: list[dict]) -> list[dict]:
+    """Collapse partial-fill executions of one order into a single lot.
+
+    Robinhood reports a single order as multiple executions (partial fills,
+    often within seconds at slightly different prices). Pairing at the
+    execution level fragments one trading decision into several CSV rows with
+    distinct Group IDs. Aggregating by (order_id, option_url, position_effect)
+    restores one lot per order — collapsing broker fragmentation while leaving
+    genuine scale-outs and averaging-down intact (those are separate orders).
+
+    Per group: quantity = Σ fills, price_per_share = volume-weighted avg
+    (P/L-preserving — equals summing per-fill costs), dt = earliest fill (the
+    stable Group ID anchor). All per-order-constant fields carry through.
+    Executions missing an order_id are passed through untouched.
+    """
+    groups: dict = {}
+    passthrough = []
+    for ex in executions:
+        oid = ex.get("order_id")
+        if not oid:
+            passthrough.append(ex)
+            continue
+        key = (oid, ex.get("option_url"), ex.get("position_effect"))
+        groups.setdefault(key, []).append(ex)
+
+    aggregated = []
+    for fills in groups.values():
+        if len(fills) == 1:
+            aggregated.append(fills[0])
+            continue
+        total_qty = sum(f["quantity"] for f in fills)
+        if total_qty > 0:
+            vwap_price = sum(f["price_per_share"] * f["quantity"] for f in fills) / total_qty
+        else:
+            vwap_price = fills[0]["price_per_share"]
+        dts = [f["dt"] for f in fills if f["dt"]]
+        first_dt = min(dts) if dts else fills[0]["dt"]
+        merged = dict(fills[0])
+        merged["quantity"] = total_qty
+        merged["price_per_share"] = vwap_price
+        merged["dt"] = first_dt
+        aggregated.append(merged)
+
+    aggregated.extend(passthrough)
+    aggregated.sort(key=lambda e: e["dt"] or datetime.min.replace(tzinfo=timezone.utc))
+    collapsed = len(executions) - len(aggregated)
+    if collapsed:
+        print(f"  → Aggregated {len(executions)} executions into {len(aggregated)} order-lots "
+              f"({collapsed} fragmented fills merged)")
+    return aggregated
+
+
 # ──────────────────────────────────────────────
 # PAIR OPENS → CLOSES
 # ──────────────────────────────────────────────
@@ -1124,7 +1176,7 @@ def build_trade_df(rows: list[dict], market: dict,
 
         sym = r.get("chain_symbol", "").upper()
         mkt = market.get((sym, date_str), {})
-        vix = market.get(("^VIX", date_str), "")
+        vix = market.get(("^VIX", date_str), None)
         cumulative_pl += r["pl"]
 
         entry_et = to_eastern(r["entry_dt"]) if r["entry_dt"] else None
@@ -1137,18 +1189,21 @@ def build_trade_df(rows: list[dict], market: dict,
             "Symbol": sym,
             "Expiry Date": fmt_date(r["expiry_date"]),
             "Type": r["option_type"].capitalize(),
-            "Strike": r.get("strike_price", ""),
+            "Strike": r.get("strike_price", None),
             "Qty": r["quantity"],
-            "Asset Open": mkt.get("Asset Open", ""),
-            "Asset High": mkt.get("Asset High", ""),
-            "Asset Low": mkt.get("Asset Low", ""),
-            "Asset Close": mkt.get("Asset Close", ""),
+            # Numeric columns default to None (not "") — pandas 3.0 infers a strict
+            # str dtype from "" and then rejects float assignment during the
+            # sticky-column merge (see merge_trade_csv).
+            "Asset Open": mkt.get("Asset Open", None),
+            "Asset High": mkt.get("Asset High", None),
+            "Asset Low": mkt.get("Asset Low", None),
+            "Asset Close": mkt.get("Asset Close", None),
             "VWAP": r.get("vwap", ""),
             "8 EMA": r.get("ema8", ""),
             "Entry Time": fmt_time(r["entry_dt"], time_format),
             "Exit Time": fmt_time(r["exit_dt"], time_format),
             "Hold Time (min)": r["hold_min"],
-            "Entry Hour": entry_et.hour if entry_et else "",
+            "Entry Hour": entry_et.hour if entry_et else None,
             "Entry Cost": int(-r["entry_cost"]),
             "Risk ($)": int(r["entry_cost"]),
             "Exit Credit": int(r["exit_credit"]),
@@ -1158,7 +1213,7 @@ def build_trade_df(rows: list[dict], market: dict,
             "Win/Loss": "WIN" if r["pl"] > 0 else ("LOSS" if r["pl"] < 0 else "BE"),
             "Is Win": 1 if r["pl"] > 0 else 0,
             "VIX": vix,
-            "Delta": r.get("delta", ""),
+            "Delta": r.get("delta", None),
             "Group ID": r["group_id"],
             "DTE": r["dte"],
         })
@@ -1479,6 +1534,7 @@ def main():
         save_instrument_cache()
 
         if executions:
+            executions = aggregate_executions_by_order(executions)
             print("🔗 Pairing entries → exits...\n")
             paired_rows, unmatched_opens = pair_into_trade_rows(executions)
 
