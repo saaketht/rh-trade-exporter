@@ -23,6 +23,7 @@ import argparse
 import json
 import shutil
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -59,7 +60,56 @@ def _new_key(r):
             (r["option_type"] or "")[0], _fmt_t(r["entry_dt"]))
 
 
-def reconstruct(raw_path: Path, headers: dict):
+def add_expired_otm_closes(execs: list, today: date) -> list:
+    """For NON-SPY contracts left net-long/short past their expiration with no
+    closing execution, synthesize a $0 expiry close so the position becomes a
+    realized row (expired worthless). Scoped to non-SPY: SPY 0DTE positions in
+    the existing CSV all have real closes, and we don't want to disturb the
+    already-verified SPY reconstruction.
+
+    Long (buy) expiring worthless -> P/L = -entry_cost; short (sell) -> +credit.
+    The existing FIFO sign logic produces both correctly from exit_credit=0.
+    """
+    from collections import defaultdict
+    by_url = defaultdict(lambda: {"open": 0, "close": 0, "ex": None})
+    for e in execs:
+        g = by_url[e["option_url"]]
+        g[e["position_effect"]] = g.get(e["position_effect"], 0) + e["quantity"]
+        if e["position_effect"] == "open" and g["ex"] is None:
+            g["ex"] = e
+    extra = []
+    for url, g in by_url.items():
+        proto = g["ex"]
+        if proto is None or (proto.get("chain_symbol") or "").upper() == "SPY":
+            continue
+        net = g["open"] - g["close"]
+        exp = proto.get("expiration_date")
+        if net <= 0 or not exp:
+            continue
+        try:
+            exp_d = datetime.strptime(exp, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if exp_d >= today:
+            continue  # not expired yet
+        close_dt = datetime(exp_d.year, exp_d.month, exp_d.day, 16, 0,
+                            tzinfo=ZoneInfo("America/New_York")).astimezone(ZoneInfo("UTC"))
+        c = dict(proto)
+        c.update({
+            "order_id": f"expired:{url}",
+            "dt": close_dt,
+            "position_effect": "close",
+            "side": "sell" if proto["side"] == "buy" else "buy",
+            "quantity": net,
+            "price_per_share": 0.0,
+        })
+        extra.append(c)
+    if extra:
+        print(f"  → synthesized {len(extra)} expired-OTM closes (non-SPY, expiry passed)")
+    return execs + extra
+
+
+def reconstruct(raw_path: Path, headers: dict, today: date):
     """Full raw dump -> clean paired rows (all symbols, all dates).
 
     `headers` lets parse_executions resolve any option instruments missing
@@ -69,6 +119,7 @@ def reconstruct(raw_path: Path, headers: dict):
     orders = json.loads(raw_path.read_text())
     execs = hood.parse_executions(orders, headers)
     hood.save_instrument_cache()
+    execs = add_expired_otm_closes(execs, today)
     execs = hood.aggregate_executions_by_order(execs)
     rows, _ = hood.pair_into_trade_rows(execs)
     return rows
@@ -169,7 +220,7 @@ def main():
     headers = hood.make_headers(hood.resolve_token(_A()))
 
     print(f"Reconstructing from {raw_path}...")
-    all_rows = reconstruct(raw_path, headers)
+    all_rows = reconstruct(raw_path, headers, date.today())
     print(f"  {len(all_rows)} clean paired rows reconstructed")
 
     regroup_file("spy_trades.csv", True, all_rows, out_dir, args.apply)
