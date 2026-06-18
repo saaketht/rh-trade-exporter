@@ -234,6 +234,56 @@ class TestPairIntoTradeRows:
         assert unmatched == []
 
 
+class TestFragmentationRegression:
+    """Lock in the three real-world shapes the order_id regroup fixed, so a
+    future refactor can't silently re-fragment one decision into many rows.
+    Each mirrors an actual incident from outputs/spy_trades.csv."""
+
+    def _run(self, execs):
+        return hood.pair_into_trade_rows(hood.aggregate_executions_by_order(execs))
+
+    def test_broker_fragmentation_collapses(self):
+        """676P 2026-02-06: one buy order RH filled in 3 executions at the same
+        instant + one sell → must be ONE row (qty 3), not three."""
+        execs = [
+            _make_exec("open", "buy", 1, 0.80, ts_offset_sec=0, order_id="o_open"),
+            _make_exec("open", "buy", 1, 0.80, ts_offset_sec=1, order_id="o_open"),
+            _make_exec("open", "buy", 1, 0.80, ts_offset_sec=2, order_id="o_open"),
+            _make_exec("close", "sell", 3, 1.11, ts_offset_min=3, order_id="o_close"),
+        ]
+        rows, unmatched = self._run(execs)
+        assert len(rows) == 1
+        assert rows[0]["quantity"] == 3
+        assert not unmatched
+
+    def test_real_scaleout_stays_separate(self):
+        """687P 2026-02-04: one entry, two SEPARATE close orders at different
+        times → stays TWO rows sharing one Group ID (a real scale-out)."""
+        execs = [
+            _make_exec("open", "buy", 2, 0.80, ts_offset_min=0, order_id="o_open"),
+            _make_exec("close", "sell", 1, 2.21, ts_offset_min=111, order_id="o_close1"),
+            _make_exec("close", "sell", 1, 3.45, ts_offset_min=154, order_id="o_close2"),
+        ]
+        rows, unmatched = self._run(execs)
+        assert len(rows) == 2
+        assert rows[0]["group_id"] == rows[1]["group_id"]
+        assert not unmatched
+
+    def test_average_down_stays_two_rows(self):
+        """753P 2026-05-28: entry + a later average-down (two open orders) closed
+        together → TWO rows with DISTINCT Group IDs (two entry decisions)."""
+        execs = [
+            _make_exec("open", "buy", 10, 0.80, ts_offset_min=0, order_id="o_entry"),
+            _make_exec("open", "buy", 7, 0.49, ts_offset_min=51, order_id="o_avgdown"),
+            _make_exec("close", "sell", 17, 0.36, ts_offset_min=62, order_id="o_close"),
+        ]
+        rows, unmatched = self._run(execs)
+        assert len(rows) == 2
+        assert rows[0]["group_id"] != rows[1]["group_id"]
+        assert {r["quantity"] for r in rows} == {10, 7}
+        assert not unmatched
+
+
 # ──────────────────────────────────────────────
 # VWAP / EMA
 # ──────────────────────────────────────────────
