@@ -359,13 +359,30 @@
     return;
   }
 
-  // Static skeleton for charts (canvases recreated on span change to clean up Chart.js)
+  // The three full-width charts are different lenses on the same time axis —
+  // collapsed into one tabbed card following the equity-tabs paradigm in analysis.html.
   grid.innerHTML = `
-    <div class="card full"><h2>Equity vs Cost Basis</h2><canvas id="eq-basis"></canvas></div>
-    <div class="card full"><h2>All-time P/L</h2><canvas id="pnl-time"></canvas></div>
-    <div class="card full"><h2>Period Return</h2><canvas id="period-return"></canvas></div>
+    <div class="card full">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <h2 id="pf-main-title" style="margin-bottom:0">Equity vs Cost Basis</h2>
+        <div class="tabs" style="margin-bottom:0" id="pf-main-tabs">
+          <div class="tab active" data-mode="eq-basis">Equity vs Basis</div>
+          <div class="tab" data-mode="pnl-time">All-time P/L</div>
+          <div class="tab" data-mode="period-return">Period Return</div>
+        </div>
+      </div>
+      <canvas id="pf-main"></canvas>
+    </div>
     <div class="card"><h2>Cumulative Deposits & Withdrawals</h2><canvas id="dep-wd"></canvas></div>
   `;
+  const MAIN_TITLES = {
+    'eq-basis': 'Equity vs Cost Basis',
+    'pnl-time': 'All-time P/L',
+    'period-return': 'Period Return',
+  };
+  const MAIN_TAB_KEY = 'pf-main-tab';
+  let mainMode = localStorage.getItem(MAIN_TAB_KEY) || 'eq-basis';
+  if (!(mainMode in MAIN_TITLES)) mainMode = 'eq-basis';
 
   // ── Span filtering ──
   const SPANS = {
@@ -408,6 +425,10 @@
   const STORAGE_KEY = 'pf-active-span';
   let activeSpan = localStorage.getItem(STORAGE_KEY) || '1Y';
   if (!(activeSpan in SPANS)) activeSpan = '1Y';
+  // With the synthetic backfill removed, the data range is small (live-snapshots only).
+  // If the persisted choice would have no data, fall back to ALL.
+  const reqDays = SPANS[activeSpan];
+  if (typeof reqDays === 'number' && reqDays > daysOfData + 1) activeSpan = 'ALL';
 
   // Show + wire up the span row
   const spanRow = document.getElementById('portfolio-span-row');
@@ -482,88 +503,78 @@
   }
 
   // ── Chart rendering ──
-  function renderCharts() {
-    // Clean up previous chart instances
-    while (charts.length) charts.pop().destroy();
+  // The main canvas (#pf-main) is recycled across the three lens tabs; dep-wd is its own card.
+  let mainChart = null;
 
-    const sliced = filterDaily(activeSpan);
-    const points = sliced.length;
-    const dense = points >= 90;
-    const subtitle = SPAN_LABEL[activeSpan] + ` · ${points} day${points === 1 ? '' : 's'}`;
-
-    const eqXY = sliced.map(s => ({ x: s.timestamp, y: s.current_equity || 0 }));
-    const basisXY = sliced.map(s => ({ x: s.timestamp, y: s.net_cash_basis || 0 }));
-    const pnlXY = sliced.map(s => ({ x: s.timestamp, y: s.all_time_pnl || 0 }));
-    const depXY = sliced.map(s => ({ x: s.timestamp, y: s.deposits || 0 }));
-    const wdXY = sliced.map(s => ({ x: s.timestamp, y: s.withdrawals || 0 }));
-
-    // Period return: equity normalized to 100% at the start of the slice
+  function buildMainConfig(mode, sliced, dense, subtitle) {
+    if (mode === 'eq-basis') {
+      const eqXY = sliced.map(s => ({ x: s.timestamp, y: s.current_equity || 0 }));
+      const basisXY = sliced.map(s => ({ x: s.timestamp, y: s.net_cash_basis || 0 }));
+      return {
+        type: 'line',
+        data: {
+          datasets: [
+            {
+              label: 'Equity', data: eqXY,
+              borderColor: b, borderWidth: 2,
+              backgroundColor: (ctx) => {
+                const { chart } = ctx;
+                if (!chart.chartArea) return b + '22';
+                return makeGradient(chart.ctx, b, chart.chartArea);
+              },
+              fill: 'origin',
+              cubicInterpolationMode: 'monotone',
+              tension: 0.2,
+              pointRadius: dense ? 0 : 3,
+              pointHoverRadius: 5,
+            },
+            {
+              label: 'Cost Basis', data: basisXY,
+              borderColor: gray, borderWidth: 1.5, borderDash: [5, 4],
+              fill: false,
+              cubicInterpolationMode: 'monotone',
+              tension: 0.2,
+              pointRadius: 0,
+              pointHoverRadius: 4,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          plugins: { tooltip: tooltipMoney, subtitle: subtitlePlugin(subtitle) },
+          scales: { x: xTimeScale(sliced), y: dollarTicks },
+        },
+      };
+    }
+    if (mode === 'pnl-time') {
+      const pnlXY = sliced.map(s => ({ x: s.timestamp, y: s.all_time_pnl || 0 }));
+      return {
+        type: 'line',
+        data: {
+          datasets: [{
+            label: 'All-time P/L', data: pnlXY,
+            borderColor: '#9ca3af', borderWidth: 1.5,
+            fill: { target: 'origin', above: g + '22', below: r + '22' },
+            cubicInterpolationMode: 'monotone',
+            tension: 0.2,
+            pointRadius: dense ? 0 : 2,
+            pointHoverRadius: 5,
+          }],
+        },
+        options: {
+          responsive: true,
+          plugins: { tooltip: tooltipMoney, subtitle: subtitlePlugin(subtitle) },
+          scales: { x: xTimeScale(sliced), y: dollarTicks },
+        },
+      };
+    }
+    // period-return
     const baseEquity = sliced[0].current_equity || 1;
     const periodReturnXY = sliced.map(s => ({
       x: s.timestamp,
       y: baseEquity ? ((s.current_equity || 0) / baseEquity - 1) * 100 : 0,
     }));
-
-    // Equity vs Basis — gradient under equity, dashed gray for basis
-    charts.push(new Chart(document.getElementById('eq-basis'), {
-      type: 'line',
-      data: {
-        datasets: [
-          {
-            label: 'Equity', data: eqXY,
-            borderColor: b, borderWidth: 2,
-            backgroundColor: (ctx) => {
-              const { chart } = ctx;
-              if (!chart.chartArea) return b + '22';
-              return makeGradient(chart.ctx, b, chart.chartArea);
-            },
-            fill: 'origin',
-            cubicInterpolationMode: 'monotone',
-            tension: 0.2,
-            pointRadius: dense ? 0 : 3,
-            pointHoverRadius: 5,
-          },
-          {
-            label: 'Cost Basis', data: basisXY,
-            borderColor: gray, borderWidth: 1.5, borderDash: [5, 4],
-            fill: false,
-            cubicInterpolationMode: 'monotone',
-            tension: 0.2,
-            pointRadius: 0,
-            pointHoverRadius: 4,
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        plugins: { tooltip: tooltipMoney, subtitle: subtitlePlugin(subtitle) },
-        scales: { x: xTimeScale(sliced), y: dollarTicks },
-      },
-    }));
-
-    // All-time P/L — neutral line, fill colored by sign relative to zero
-    charts.push(new Chart(document.getElementById('pnl-time'), {
-      type: 'line',
-      data: {
-        datasets: [{
-          label: 'All-time P/L', data: pnlXY,
-          borderColor: '#9ca3af', borderWidth: 1.5,
-          fill: { target: 'origin', above: g + '22', below: r + '22' },
-          cubicInterpolationMode: 'monotone',
-          tension: 0.2,
-          pointRadius: dense ? 0 : 2,
-          pointHoverRadius: 5,
-        }],
-      },
-      options: {
-        responsive: true,
-        plugins: { tooltip: tooltipMoney, subtitle: subtitlePlugin(subtitle) },
-        scales: { x: xTimeScale(sliced), y: dollarTicks },
-      },
-    }));
-
-    // Period return %
-    charts.push(new Chart(document.getElementById('period-return'), {
+    return {
       type: 'line',
       data: {
         datasets: [{
@@ -581,18 +592,44 @@
         responsive: true,
         plugins: {
           subtitle: subtitlePlugin(`Equity normalized to 0% at start of ${SPAN_LABEL[activeSpan].toLowerCase()}`),
-          tooltip: {
-            callbacks: {
-              label: (ctx) => `Return: ${fmtPct(ctx.parsed.y)}`,
-            },
-          },
+          tooltip: { callbacks: { label: (ctx) => `Return: ${fmtPct(ctx.parsed.y)}` } },
         },
         scales: {
           x: xTimeScale(sliced),
           y: { ticks: { callback: (v) => fmtPct(v) }, grid: { borderDash: [3, 4], color: '#222530' } },
         },
       },
-    }));
+    };
+  }
+
+  function renderMain(sliced, dense, subtitle) {
+    if (mainChart) {
+      const i = charts.indexOf(mainChart);
+      if (i >= 0) charts.splice(i, 1);
+      mainChart.destroy();
+      mainChart = null;
+    }
+    document.getElementById('pf-main-title').textContent = MAIN_TITLES[mainMode];
+    document.querySelectorAll('#pf-main-tabs .tab').forEach(t =>
+      t.classList.toggle('active', t.dataset.mode === mainMode));
+    mainChart = new Chart(document.getElementById('pf-main'), buildMainConfig(mainMode, sliced, dense, subtitle));
+    charts.push(mainChart);
+  }
+
+  function renderCharts() {
+    // Clean up previous chart instances
+    while (charts.length) charts.pop().destroy();
+    mainChart = null;
+
+    const sliced = filterDaily(activeSpan);
+    const points = sliced.length;
+    const dense = points >= 90;
+    const subtitle = SPAN_LABEL[activeSpan] + ` · ${points} day${points === 1 ? '' : 's'}`;
+
+    renderMain(sliced, dense, subtitle);
+
+    const depXY = sliced.map(s => ({ x: s.timestamp, y: s.deposits || 0 }));
+    const wdXY = sliced.map(s => ({ x: s.timestamp, y: s.withdrawals || 0 }));
 
     // Deposits vs Withdrawals — gradients
     charts.push(new Chart(document.getElementById('dep-wd'), {
@@ -636,6 +673,20 @@
       },
     }));
   }
+
+  // Tab clicks rebuild only the main canvas (dep-wd is unaffected).
+  document.querySelectorAll('#pf-main-tabs .tab').forEach(t => {
+    t.addEventListener('click', () => {
+      if (t.dataset.mode === mainMode) return;
+      mainMode = t.dataset.mode;
+      localStorage.setItem(MAIN_TAB_KEY, mainMode);
+      const sliced = filterDaily(activeSpan);
+      const points = sliced.length;
+      const dense = points >= 90;
+      const subtitle = SPAN_LABEL[activeSpan] + ` · ${points} day${points === 1 ? '' : 's'}`;
+      renderMain(sliced, dense, subtitle);
+    });
+  });
 
   renderCharts();
 })();

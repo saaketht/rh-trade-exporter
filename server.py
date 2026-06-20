@@ -34,7 +34,6 @@ NOTES_FILE = OUTPUTS_DIR / "journal_notes.json"
 ADMIN_SCRIPTS = {
     "hood":              [sys.executable, str(BASE_DIR / "hood.py")],
     "cash_flow":         [sys.executable, str(BASE_DIR / "cash_flow.py")],
-    "backfill":          [sys.executable, str(BASE_DIR / "cash_flow.py"), "--backfill"],
     "spy_daily":         [sys.executable, str(BASE_DIR / "spy_daily.py")],
     "spy_intraday":      [sys.executable, str(BASE_DIR / "spy_intraday.py")],
     "spy_intraday_back": [sys.executable, str(BASE_DIR / "spy_intraday.py"), "--backfill"],
@@ -352,21 +351,19 @@ def get_cash_flow_events(date: Optional[str] = Query(None), _=Depends(verify_tok
 
 @app.get("/api/cash-flow")
 def get_cash_flow(_=Depends(verify_token)):
-    """Merge historical (synthetic, from --backfill) + live snapshots.
-    Dedup by UTC date; live snapshot wins on collision (most accurate).
+    """Live snapshots only — one per UTC date (latest-timestamp wins).
+
+    The synthetic backfill (cash_flow_historical.jsonl) was built from RH's
+    /portfolio/performance/ endpoint, which serves a span-relative *return*
+    line, not stable historical account value — span-dependent and not
+    reconcilable with live equity. cash_flow.jsonl is the source of truth.
     """
-    historical = _read_jsonl("cash_flow_historical.jsonl")
     live = _read_jsonl("cash_flow.jsonl")
     by_date: dict[str, dict] = {}
-    # Insert historical first so live overrides on the same date
-    for s in historical:
-        ts = s.get("timestamp") or ""
-        if ts:
-            by_date[ts[:10]] = s
     for s in live:
         ts = s.get("timestamp") or ""
         if ts:
-            by_date[ts[:10]] = s
+            by_date[ts[:10]] = s  # later snapshot in file wins → closest to EOD
     return sorted(by_date.values(), key=lambda x: x.get("timestamp", ""))
 
 @app.get("/api/summary")

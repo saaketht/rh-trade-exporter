@@ -462,28 +462,25 @@ class TestOtherEndpoints:
         assert len(data) == 2
         assert data[0]["equity"] == 10000
 
-    def test_cash_flow_merges_historical_and_live(self, client, tmp_outputs):
-        """Historical (synthetic) merges with live; live wins on date collision."""
+    def test_cash_flow_ignores_historical(self, client, tmp_outputs):
+        """Synthetic backfill (cash_flow_historical.jsonl) is no longer merged —
+        cash_flow.jsonl is the sole source of truth. Historical dates are dropped."""
         (tmp_outputs / "cash_flow_historical.jsonl").write_text(
             '{"timestamp":"2024-01-01T20:00:00+00:00","equity":500,"synthetic":true}\n'
             '{"timestamp":"2024-06-01T20:00:00+00:00","equity":700,"synthetic":true}\n'
             '{"timestamp":"2026-03-05T20:00:00+00:00","equity":900,"synthetic":true}\n'
         )
         (tmp_outputs / "cash_flow.jsonl").write_text(
-            # Same date as last historical line — live should win
             '{"timestamp":"2026-03-05T22:00:00+00:00","equity":950,"synthetic":false}\n'
             '{"timestamp":"2026-03-06T22:00:00+00:00","equity":1000}\n'
         )
         data = client.get("/api/cash-flow").json()
-        # 4 unique dates: 2024-01-01, 2024-06-01, 2026-03-05, 2026-03-06
-        assert len(data) == 4
-        # Sorted ascending
-        assert data[0]["timestamp"].startswith("2024-01-01")
-        assert data[-1]["timestamp"].startswith("2026-03-06")
-        # On the 2026-03-05 collision, live (equity=950) wins
-        on_clash = [d for d in data if d["timestamp"].startswith("2026-03-05")][0]
-        assert on_clash["equity"] == 950
-        assert on_clash.get("synthetic") is False
+        # Only the 2 live dates — the 2024 synthetic dates are not served.
+        assert len(data) == 2
+        assert [d["timestamp"][:10] for d in data] == ["2026-03-05", "2026-03-06"]
+        assert all(d.get("synthetic") is not True for d in data)
+        # The 2026-03-05 row is the live one (equity=950), not the synthetic 900.
+        assert data[0]["equity"] == 950
 
     def test_cash_flow_events_empty(self, client, tmp_outputs):
         r = client.get("/api/cash-flow/events")
@@ -580,14 +577,14 @@ class TestOtherEndpoints:
         assert len(data) == 1
         assert data[0]["id"] == "b"
 
-    def test_cash_flow_historical_only(self, client, tmp_outputs):
-        """If only the historical file exists, it's still served."""
+    def test_cash_flow_historical_ignored_when_no_live(self, client, tmp_outputs):
+        """With only the historical file (no live snapshots), the endpoint returns
+        nothing — the synthetic backfill is not a fallback source anymore."""
         (tmp_outputs / "cash_flow_historical.jsonl").write_text(
             '{"timestamp":"2024-01-01T20:00:00+00:00","equity":500,"synthetic":true}\n'
         )
         data = client.get("/api/cash-flow").json()
-        assert len(data) == 1
-        assert data[0]["equity"] == 500
+        assert data == []
 
 
 # ──────────────────────────────────────────────
