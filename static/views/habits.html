@@ -56,6 +56,39 @@
   const morningPL = T.filter(t => t.hour != null && t.hour < 12).reduce((s, t) => s + t.pl, 0);
   const afternoonPL = T.filter(t => t.hour != null && t.hour >= 12).reduce((s, t) => s + t.pl, 0);
 
+  // Chase trades: group rows into decisions (Group ID), then flag entries
+  // within 5 min of the prior exit that day. The 2-5 min band is the tilt
+  // window; instant re-fires (<2 min) historically stay profitable.
+  const groups = {};
+  for (const t of allTrades) {
+    if (!t.group_id || !t.date || !t.entry_time || !t.exit_time) continue;
+    const entry = new Date(t.date + 'T' + t.entry_time);
+    const exit = new Date(t.date + 'T' + t.exit_time);
+    const g = groups[t.group_id] || (groups[t.group_id] = { date: t.date, entry, exit, pl: 0 });
+    g.pl += t.pl || 0;
+    if (exit > g.exit) g.exit = exit;
+  }
+  const byDay = {};
+  for (const g of Object.values(groups)) (byDay[g.date] = byDay[g.date] || []).push(g);
+  const chase = [], chaseAfterLoss = [];
+  for (const gs of Object.values(byDay)) {
+    gs.sort((a, b) => a.entry - b.entry);
+    gs.forEach((g, i) => {
+      const priors = gs.slice(0, i).filter(p => p.exit <= g.entry);
+      if (!priors.length) return;
+      const last = priors.reduce((a, b) => (b.exit > a.exit ? b : a));
+      if ((g.entry - last.exit) / 60000 <= 5) {
+        chase.push(g);
+        if (last.pl < 0) chaseAfterLoss.push(g);
+      }
+    });
+  }
+  const chasePL = Math.round(chase.reduce((s, g) => s + g.pl, 0));
+  const chaseLossPL = Math.round(chaseAfterLoss.reduce((s, g) => s + g.pl, 0));
+  const nonChase = Object.values(groups).filter(g => !chase.includes(g));
+  const nonChasePL = Math.round(nonChase.reduce((s, g) => s + g.pl, 0));
+  const chaseWR = chase.length ? Math.round(chase.filter(g => g.pl > 0).length / chase.length * 100) : 0;
+
   // 1-lot percentage
   const oneLots = T.filter(t => t.qty === 1).length;
   const oneLotPct = Math.round(oneLots / Math.max(T.length, 1) * 100);
@@ -76,6 +109,11 @@
       <h3>Blowup Days</h3>
       <p><span class="num r">${blowups.length} days > -$500</span>
       Worst days cost ${plStr(blowupTotal)} total.${blowups.length ? ' Worst: ' + plStr(blowups.sort((a,b) => a.pl - b.pl)[0].pl) + ' on ' + blowups[0].date : ''}</p>
+    </div>
+    <div class="insight-card ${chasePL < 0 ? 'bad' : 'good'}">
+      <h3>Chase Trades (≤5 min re-entry)</h3>
+      <p><span class="num ${chasePL >= 0 ? 'g' : 'r'}">${plStr(chasePL)} on ${chase.length} chases</span>
+      ${chaseWR}% WR vs ${plStr(nonChasePL)} on everything else. After a loss: ${plStr(chaseLossPL)} (${chaseAfterLoss.length} trades). Rule: red exit → 10-min lockout.</p>
     </div>
     <div class="insight-card">
       <h3>Position Sizing</h3>
