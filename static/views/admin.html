@@ -124,14 +124,14 @@
 <div class="adm-section">
   <h2>On-demand fetch</h2>
   <p class="subtitle" style="margin-bottom:14px;font-size:12px">
-    Cron runs hood + cash_flow + spy_intraday + spy_daily nightly at 4:05 PM ET on weekdays — these buttons are for "I traded today" or retry-after-failure.
+    Cron runs hood + option_intraday + cash_flow + spy_daily + spy_intraday nightly at 4:05 PM ET on weekdays — these buttons are for "I traded today" or retry-after-failure.
     Only one job at a time.
   </p>
   <div class="adm-runs" id="adm-runs">
     <div class="adm-run-row adm-run-combined" data-script="daily_refresh">
       <div class="adm-run-meta">
         <span class="adm-run-name">Daily refresh</span>
-        <span class="adm-run-desc">hood → cash_flow → spy_intraday → spy_daily (abort on first failure). Per-step status mirrors into the rows below.</span>
+        <span class="adm-run-desc">hood → cash_flow → spy_intraday → spy_daily → option_intraday (abort on first failure). Per-step status mirrors into the rows below.</span>
       </div>
       <span class="adm-run-status">idle</span>
       <button class="adm-btn">Run</button>
@@ -141,6 +141,14 @@
       <div class="adm-run-meta">
         <span class="adm-run-name">hood.py</span>
         <span class="adm-run-desc">Pull options trades since last fetch → spy_trades.csv (~30-90s)</span>
+      </div>
+      <span class="adm-run-status">idle</span>
+      <button class="adm-btn">Run</button>
+    </div>
+    <div class="adm-run-row" data-script="option_intraday">
+      <div class="adm-run-meta">
+        <span class="adm-run-name">option_intraday.py</span>
+        <span class="adm-run-desc">Save 5m bars for today's option contracts (+ catch up the last week) before RH ages them out</span>
       </div>
       <span class="adm-run-status">idle</span>
       <button class="adm-btn">Run</button>
@@ -173,6 +181,14 @@
       <div class="adm-run-meta">
         <span class="adm-run-name">spy_intraday.py --backfill</span>
         <span class="adm-run-desc">Walk all missing weekdays in Polygon's 2y window (slow — ~13s per day)</span>
+      </div>
+      <span class="adm-run-status">idle</span>
+      <button class="adm-btn">Run</button>
+    </div>
+    <div class="adm-run-row" data-script="token_watch">
+      <div class="adm-run-meta">
+        <span class="adm-run-name">token_watch.py</span>
+        <span class="adm-run-desc">Ask RH whether the saved token still works; alert on Discord / email if it's dead or expiring</span>
       </div>
       <span class="adm-run-status">idle</span>
       <button class="adm-btn">Run</button>
@@ -315,7 +331,7 @@
   // For the daily_refresh combined run, track per-step state across polls so
   // markers that have scrolled off the 4KB log_tail don't downgrade us.
   // States: 'queued' → 'running' → 'done' | 'failed'.
-  const COMBINED_STEPS = ['hood', 'cash_flow', 'spy_intraday', 'spy_daily'];
+  const COMBINED_STEPS = ['hood', 'cash_flow', 'spy_intraday', 'spy_daily', 'option_intraday'];
   let stepStates = {};
 
   function setRowState(script, label, klass) {
