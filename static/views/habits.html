@@ -1,6 +1,134 @@
 <h1>Habit Patterns</h1>
 <p class="subtitle" id="habits-sub">Loading…</p>
 
+<div class="section" id="split-section">
+  <h2 style="font-size:15px;color:#ddd;margin:0 0 4px">Where the Money Comes From</h2>
+  <p style="color:#888;font-size:12px;margin:0 0 12px;line-height:1.6">
+    Every opening order sorted into one of three groups, using only what you knew when you clicked or at the 30-minute mark.
+    First match wins, in the order shown.
+  </p>
+  <div class="split-tiles" id="split-tiles"></div>
+  <div class="split-chart-wrap"><canvas id="split-chart"></canvas></div>
+  <p id="split-rescue" style="color:#999;font-size:13px;line-height:1.6;margin:10px 0 0"></p>
+  <details class="split-recent">
+    <summary>Recent flagged orders</summary>
+    <div style="overflow-x:auto"><table id="split-table"></table></div>
+  </details>
+  <p style="color:#666;font-size:12px;margin-top:10px;line-height:1.6">
+    Rules were found on trades before July 2026 and held on trades after it. The 30-minute check uses SPY's direction from cached 5-minute bars, not the option's price,
+    so the dollars in the red group overstate what a cut at 30 minutes would have saved. The rescue rate is the reliable number.
+    This split does not catch size: a fast trade using half the account lands in "everything else" even when it loses.
+    <span id="split-missing"></span>
+  </p>
+</div>
+<style>
+  .split-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
+  .split-tile{background:#1a1d27;border-radius:10px;padding:14px 16px;border-left:3px solid #333}
+  .split-tile h3{font-size:11px;font-weight:600;color:#aaa;text-transform:uppercase;letter-spacing:.5px;margin:0 0 6px}
+  .split-tile .v{font-size:22px;font-weight:700;display:block}
+  .split-tile .s{font-size:12px;color:#888}
+  .split-tile.hold{border-left-color:#f87171}.split-tile.entry{border-left-color:#fbbf24}.split-tile.clean{border-left-color:#4ade80}
+  .split-chart-wrap{background:#1a1d27;border-radius:10px;padding:12px;height:260px;position:relative}
+  .split-recent{margin-top:12px;background:#1a1d27;border-radius:10px;padding:10px 14px}
+  .split-recent summary{cursor:pointer;color:#aaa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+  #split-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+  #split-table th{color:#777;font-weight:600;text-align:left;padding:4px 8px;border-bottom:1px solid #2a2d3a}
+  #split-table td{color:#bbb;padding:4px 8px;border-bottom:1px solid #20232e;white-space:nowrap}
+  @media(max-width:768px){.split-tiles{grid-template-columns:1fr}}
+</style>
+<script>
+(async function splitView() {
+  const COLORS = { hold_leak: '#f87171', entry_leak: '#fbbf24', clean: '#4ade80' };
+  const LABELS = { hold_leak: 'Held red past 30 min', entry_leak: '9am or re-entry after a loss', clean: 'Everything else' };
+  const TILE = { hold_leak: 'hold', entry_leak: 'entry', clean: 'clean' };
+  const money = v => (v >= 0 ? '+$' : '−$') + Math.abs(Math.round(v)).toLocaleString();
+  let data;
+  try { data = await apiFetch('/api/trades/split'); } catch (e) {
+    document.getElementById('split-tiles').innerHTML = '<p style="color:#f87171">Could not load the split: ' + e.message + '</p>';
+    return;
+  }
+  const G = data.groups;
+  document.getElementById('split-tiles').innerHTML = ['hold_leak', 'entry_leak', 'clean'].map(k => `
+    <div class="split-tile ${TILE[k]}">
+      <h3>${LABELS[k]}</h3>
+      <span class="v" style="color:${G[k].pl >= 0 ? '#4ade80' : '#f87171'}">${money(G[k].pl)}</span>
+      <span class="s">${G[k].n} orders</span>
+    </div>`).join('');
+
+  const M = data.months;
+  const greenMonths = M.filter(m => m.clean > 0).length;
+  const r = data.rescue;
+  const pct = r.underwater_at_30 ? Math.round(r.ended_green / r.underwater_at_30 * 100) : 0;
+  document.getElementById('split-rescue').innerHTML =
+    `<b style="color:#ddd">${pct}% rescue rate.</b> Of ${r.underwater_at_30} orders still open and underwater at 30 minutes, ${r.ended_green} ended green. ` +
+    `"Everything else" was green in ${greenMonths} of ${M.length} months.`;
+  if (data.hold_check_missing)
+    document.getElementById('split-missing').textContent = `${data.hold_check_missing} held orders had no cached bars and could not be checked; they count as "everything else".`;
+
+  const labelOf = ym => { const [y, m] = ym.split('-'); return new Date(+y, +m - 1, 1).toLocaleString('en-US', { month: 'short' }) + " '" + y.slice(2); };
+  if (window.__splitChart) { try { window.__splitChart.destroy(); } catch (e) {} }
+  const ctx = document.getElementById('split-chart');
+  if (window.Chart && ctx) {
+    window.__splitChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: M.map(m => labelOf(m.month)),
+        datasets: [
+          ...['clean', 'entry_leak', 'hold_leak'].map(k => ({ label: LABELS[k], data: M.map(m => m[k]), backgroundColor: COLORS[k], stack: 'g', borderRadius: 2 })),
+          { type: 'line', label: 'Net', data: M.map(m => m.total), borderColor: '#e0e0e0', backgroundColor: '#e0e0e0', pointRadius: 3, borderWidth: 1.5, stack: 'net', tension: 0 },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#aaa', boxWidth: 10, font: { size: 11 } } },
+          tooltip: { callbacks: { label: c => c.dataset.label + ': ' + money(c.parsed.y) } },
+        },
+        scales: {
+          x: { stacked: true, ticks: { color: '#888' }, grid: { display: false } },
+          y: { stacked: true, ticks: { color: '#888', callback: v => money(v) }, grid: { color: '#2a2d3a' } },
+        },
+      },
+    });
+  }
+
+  const flagged = data.orders.filter(o => o.group !== 'clean').slice(0, 15);
+  document.getElementById('split-table').innerHTML =
+    '<tr><th>Date</th><th>Entry</th><th>Contract</th><th>Qty</th><th>P/L</th><th>Why</th></tr>' +
+    flagged.map(o => `<tr>
+      <td>${o.date}</td><td>${(o.entry_time || '').slice(0, 5)}</td>
+      <td>${o.strike}${(o.type || '')[0] || ''}</td><td>${o.qty}</td>
+      <td style="color:${o.pl >= 0 ? '#4ade80' : '#f87171'}">${money(o.pl)}</td>
+      <td><span style="color:${COLORS[o.group]}">●</span> ${o.reason}</td></tr>`).join('');
+})();
+</script>
+
+<div class="section" id="success-section">
+  <h2 style="font-size:15px;color:#ddd;margin:0 0 4px">What Works</h2>
+  <p style="color:#888;font-size:12px;margin:0 0 12px;line-height:1.6">
+    Five behaviors that separated winning stretches from losing ones. Recent window vs. everything before it.
+    Window:
+    <span id="sb-window" style="margin-left:4px">
+      <button class="sb-btn" data-n="3">3d</button><button class="sb-btn" data-n="5">5d</button><button class="sb-btn" data-n="10">10d</button><button class="sb-btn" data-n="20">20d</button>
+    </span>
+    <span id="sb-range" style="margin-left:8px;color:#666"></span>
+  </p>
+  <div class="insight-grid" id="success-cards"></div>
+  <p style="color:#666;font-size:12px;margin-top:12px;line-height:1.6">
+    <b style="color:#888">Oil thesis, tested 2026-09-11</b> (CL=F vs SPY, 5-min Aug 24–Sep 10 and 1-min Sep 2–10): the inverse oil/SPY move is real and was strongest on Sep 8–10
+    (same-bar correlation −0.53 / −0.65 / −0.85), but it is coincident, not leading — every lagged correlation is ≈0 at both resolutions.
+    A mechanical "oil stalled after rising" rule had no forward SPY edge (51% hit overall, 39% during the streak), oil state at entry had zero correlation with decision P/L,
+    and the losing week Aug 31–Sep 4 saw the same oil states. Oil explains the regime; the behaviors above explain the P/L. Treat it as context, not a trigger.
+  </p>
+</div>
+<style>
+  .sb-btn{background:#1a1d27;border:1px solid #333;color:#999;font-size:11px;padding:2px 8px;margin-right:4px;border-radius:6px;cursor:pointer}
+  .sb-btn.on{border-color:#818cf8;color:#fff}
+  .sb-row{display:flex;justify-content:space-between;font-size:12px;color:#999;margin-top:6px}
+  .sb-row b{color:#ddd;font-weight:600}
+</style>
+
 <div class="section">
   <div class="insight-grid" id="habits"></div>
 </div>
@@ -92,6 +220,111 @@
   // 1-lot percentage
   const oneLots = T.filter(t => t.qty === 1).length;
   const oneLotPct = Math.round(oneLots / Math.max(T.length, 1) * 100);
+
+
+  // --- What Works: recent window vs baseline on five success behaviors ---
+  // Rows are closing executions; decisions are Group IDs. exit_date drives the window.
+  (function successBehaviors() {
+    const cards = document.getElementById('success-cards');
+    const rows = allTrades.filter(t => t.pl != null && (t.exit_date || t.date));
+    const exitDates = [...new Set(rows.map(t => t.exit_date || t.date))].sort();
+    if (exitDates.length < 2) { cards.innerHTML = '<div class="insight-card"><p>Not enough data.</p></div>'; return; }
+
+    const median = a => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+    const pct = v => isNaN(v) ? '—' : Math.round(v) + '%';
+    const min = v => isNaN(v) ? '—' : Math.round(v) + 'm';
+    const sum = a => a.reduce((s, v) => s + v, 0);
+
+    function metrics(R) {
+      const W = R.filter(t => t.pl > 0), L = R.filter(t => t.pl < 0);
+      const prem = t => (t.entry_cost != null && t.qty) ? Math.abs(t.entry_cost) / t.qty / 100 : null;
+      const withPrem = R.filter(t => prem(t) != null);
+      // decisions per day, in entry order, to measure probe-before-size
+      const byDay = {};
+      const seen = new Set();
+      for (const t of [...R].sort((a, b) => (a.date + a.entry_time).localeCompare(b.date + b.entry_time))) {
+        if (!t.group_id || seen.has(t.group_id)) continue;
+        seen.add(t.group_id);
+        (byDay[t.date] = byDay[t.date] || []).push(t.qty || 1);
+      }
+      const days = Object.values(byDay).filter(q => q.length >= 2);
+      const probeDays = days.filter(q => q[0] <= Math.min(...q) && Math.max(...q) > q[0]).length;
+      const risk = t => Math.abs(t.entry_cost || 0);
+      const totalRisk = sum(R.map(risk)) || 1;
+      return {
+        n: R.length, pl: sum(R.map(t => t.pl)),
+        wr: R.length ? W.length / R.length * 100 : NaN,
+        medLossPct: median(L.map(t => t.pl_pct).filter(v => v != null)),
+        bigLossShare: R.length ? R.filter(t => t.pl_pct != null && t.pl_pct < -50).length / R.length * 100 : NaN,
+        holdW: median(W.map(t => t.hold_time_min).filter(v => v != null)),
+        holdL: median(L.map(t => t.hold_time_min).filter(v => v != null)),
+        lottoShare: withPrem.length ? withPrem.filter(t => prem(t) < 0.40).length / withPrem.length * 100 : NaN,
+        medPrem: median(withPrem.map(prem)),
+        openRiskShare: sum(R.filter(t => t.entry_hour === 9).map(risk)) / totalRisk * 100,
+        openPL: sum(R.filter(t => t.entry_hour === 9).map(t => t.pl)),
+        probeShare: days.length ? probeDays / days.length * 100 : NaN, probeDays: days.length,
+      };
+    }
+
+    // Full-history delta finding (delta is point-in-time; only rows that captured one)
+    const withDelta = rows.filter(t => t.delta != null && !isNaN(t.delta));
+    const deep = withDelta.filter(t => Math.abs(t.delta) >= 0.6), far = withDelta.filter(t => Math.abs(t.delta) <= 0.2);
+    const deepPL = Math.round(sum(deep.map(t => t.pl))), farPL = Math.round(sum(far.map(t => t.pl)));
+    const deepWR = deep.length ? Math.round(deep.filter(t => t.pl > 0).length / deep.length * 100) : 0;
+    const farWR = far.length ? Math.round(far.filter(t => t.pl > 0).length / far.length * 100) : 0;
+
+    function render(n) {
+      const cut = exitDates[Math.max(0, exitDates.length - n)];
+      const recent = rows.filter(t => (t.exit_date || t.date) >= cut);
+      const base = rows.filter(t => (t.exit_date || t.date) < cut);
+      const r = metrics(recent), b = metrics(base);
+      document.getElementById('sb-range').textContent = cut + ' → ' + exitDates[exitDates.length - 1] + ' · ' + r.n + ' exits, ' + plStr(Math.round(r.pl)) + ' · vs ' + b.n + ' before';
+      document.querySelectorAll('.sb-btn').forEach(el => el.classList.toggle('on', +el.dataset.n === n));
+
+      const card = (ok, title, num, numCls, body) => `
+        <div class="insight-card ${ok === null ? '' : ok ? 'good' : 'bad'}">
+          <h3>${title}</h3>
+          <p><span class="num ${numCls}">${num}</span>${body}</p>
+        </div>`;
+      const row = (k, rv, bv) => `<span class="sb-row"><span>${k}</span><span><b>${rv}</b> <span style="color:#666">vs ${bv}</span></span></span>`;
+
+      cards.innerHTML =
+        card(r.medLossPct > -20, 'Cut losses early',
+          'median loser ' + pct(r.medLossPct), r.medLossPct > -20 ? 'g' : 'r',
+          'Target: losers closed under −15% to −20%. Big losses (worse than −50%) are what turn a flat week into a blowup.' +
+          row('Median loser', pct(r.medLossPct), pct(b.medLossPct)) +
+          row('Losses worse than −50%', pct(r.bigLossShare), pct(b.bigLossShare))) +
+        card(r.holdL <= r.holdW, 'Losers held shorter than winners',
+          min(r.holdL) + ' losers · ' + min(r.holdW) + ' winners', r.holdL <= r.holdW ? 'g' : 'r',
+          'The disposition leak is holding losers hoping and cutting winners early. Winning stretches invert it.' +
+          row('Median hold, losers', min(r.holdL), min(b.holdL)) +
+          row('Median hold, winners', min(r.holdW), min(b.holdW))) +
+        card(r.lottoShare < 10, 'Real contracts, not lottos',
+          pct(r.lottoShare) + ' lotto entries', r.lottoShare < 10 ? 'g' : 'r',
+          'Lotto = under $0.40 premium. All-time, |delta| ≥ 0.6 contracts: ' + plStr(deepPL) + ' over ' + deep.length + ' exits (' + deepWR + '% WR). |delta| ≤ 0.2: ' + plStr(farPL) + ' over ' + far.length + ' (' + farWR + '% WR).' +
+          row('Lotto share', pct(r.lottoShare), pct(b.lottoShare)) +
+          row('Median premium', isNaN(r.medPrem) ? '—' : '$' + r.medPrem.toFixed(2), isNaN(b.medPrem) ? '—' : '$' + b.medPrem.toFixed(2))) +
+        card(r.openRiskShare < 15, 'Skip the open',
+          pct(r.openRiskShare) + ' of risk in 9am hour', r.openRiskShare < 15 ? 'g' : 'r',
+          'The 9am hour is historically the worst hour and the highest-amplitude bet. Let the day print first.' +
+          row('9am share of dollars risked', pct(r.openRiskShare), pct(b.openRiskShare)) +
+          row('9am P/L', plStr(Math.round(r.openPL)), plStr(Math.round(b.openPL)))) +
+        card(r.probeShare >= 60, 'Probe before size',
+          pct(r.probeShare) + ' of days started small', r.probeShare >= 60 ? 'g' : 'r',
+          'First decision of the day at the smallest size, sizing up only once green. Size follows proof, never conviction.' +
+          row('Days starting with a probe', pct(r.probeShare) + ' of ' + r.probeDays, pct(b.probeShare) + ' of ' + b.probeDays) +
+          row('Win rate', pct(r.wr), pct(b.wr)));
+    }
+
+    let n = 3;
+    try { n = +localStorage.getItem('habits.successWindow') || 3; } catch (e) {}
+    document.querySelectorAll('.sb-btn').forEach(el => el.addEventListener('click', () => {
+      n = +el.dataset.n;
+      try { localStorage.setItem('habits.successWindow', n); } catch (e) {}
+      render(n);
+    }));
+    render(n);
+  })();
 
   const habits = document.getElementById('habits');
   habits.innerHTML = `

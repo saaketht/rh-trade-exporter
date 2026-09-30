@@ -186,3 +186,13 @@ h1{font-size:24px;font-weight:700;color:#fff;margin-bottom:4px}
   .nav-tabs{margin-top:8px}
   .app-container{padding:16px}
 }
+/* 9am lockout banner — global, sits under the sticky nav during 09:25–10:00 ET on weekdays */
+.lockout-banner{position:sticky;top:52px;z-index:99;background:#2e1416;border-bottom:1px solid #5c2226;color:#fca5a5;padding:10px 24px;font-size:13px;line-height:1.55}
+.lockout-banner .lo-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.lockout-banner .lo-title{color:#f87171;font-weight:700;font-size:14px;letter-spacing:.3px}
+.lockout-banner .lo-count{color:#fff;font-weight:700;font-variant-numeric:tabular-nums}
+.lockout-banner .lo-stats{color:#d4a5a5;font-size:12px;margin-top:2px}
+.lockout-banner .lo-stats b{color:#fecaca;font-weight:600}
+.lockout-banner.pre{background:#2a2410;border-bottom-color:#5c4a1a;color:#fde68a}
+.lockout-banner.pre .lo-title{color:#fbbf24}
+@media(max-width:768px){.lockout-banner{top:0;position:relative;padding:10px 16px}}

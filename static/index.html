@@ -26,6 +26,8 @@
   </div>
 </nav>
 
+<div id="lockout-banner" class="lockout-banner" hidden></div>
+
 <div id="app" class="app-container"></div>
 
 <script>
@@ -86,6 +88,87 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
 
 // Expose for cross-view navigation (e.g. calendar's Carried Positions → Positions tab)
 window.loadView = loadView;
+
+
+// --- 9am lockout banner ---------------------------------------------------
+// Shows on every view from 09:25 to 10:00 ET on weekdays. The open is the
+// historically worst entry hour (see Habits → What Works, plans/loop-since-4-15.md).
+// Stats are computed live from /api/trades so the warning stays honest as data lands.
+// Preview any time with ?lockout=preview.
+(function lockout() {
+  const el = document.getElementById('lockout-banner');
+  const PREVIEW = params.get('lockout') === 'preview';
+  let stats = null, loading = false;
+
+  function etNow() {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).formatToParts(new Date());
+    const g = t => parts.find(p => p.type === t).value;
+    return { dow: g('weekday'), h: +g('hour') % 24, m: +g('minute'), s: +g('second') };
+  }
+
+  const money = v => (v >= 0 ? '+$' : '−$') + Math.abs(Math.round(v)).toLocaleString();
+
+  async function loadStats() {
+    if (stats || loading) return;
+    loading = true;
+    try {
+      const trades = await apiFetch('/api/trades?symbol=SPY');
+      // Collapse exit rows into decisions (Group ID) so a scale-out counts once.
+      const dec = {};
+      for (const t of trades) {
+        if (t.entry_hour == null || !t.group_id) continue;
+        const d = dec[t.group_id] || (dec[t.group_id] = { hour: t.entry_hour, date: t.exit_date || t.date, pl: 0, cost: 0, qty: t.qty, type: t.type, strike: t.strike, delta: t.delta, time: t.entry_time, day: t.date });
+        d.pl += t.pl || 0;
+        d.cost += Math.abs(t.entry_cost || 0);
+      }
+      const all = Object.values(dec);
+      const nine = all.filter(d => d.hour === 9), rest = all.filter(d => d.hour !== 9);
+      const cutoff = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+      const recent = nine.filter(d => d.date >= cutoff);
+      const sum = a => a.reduce((s, d) => s + d.pl, 0);
+      const wr = a => a.length ? Math.round(a.filter(d => d.pl > 0).length / a.length * 100) : 0;
+      const worst = nine.reduce((w, d) => (!w || d.pl < w.pl ? d : w), null);
+      stats = {
+        n: nine.length, pl: sum(nine), wr: wr(nine), restWr: wr(rest),
+        rn: recent.length, rpl: sum(recent),
+        worst,
+      };
+    } catch (e) { stats = { error: true }; }
+    loading = false;
+    tick();
+  }
+
+  function tick() {
+    const t = etNow();
+    const weekday = !['Sat', 'Sun'].includes(t.dow);
+    const mins = t.h * 60 + t.m;
+    const pre = mins >= 9 * 60 + 25 && mins < 9 * 60 + 30;
+    const open = mins >= 9 * 60 + 30 && mins < 10 * 60;
+    const on = PREVIEW || (weekday && (pre || open));
+    if (!on) { el.hidden = true; return; }
+    if (!stats) { loadStats(); }
+
+    const left = Math.max(0, (10 * 60 - mins) * 60 - t.s);
+    const mm = String(Math.floor(left / 60)).padStart(2, '0'), ss = String(left % 60).padStart(2, '0');
+    el.className = 'lockout-banner' + (pre && !PREVIEW ? ' pre' : '');
+    const title = pre && !PREVIEW ? '9AM LOCKOUT STARTS AT 9:30' : '🔒 9AM LOCKOUT — NO NEW ENTRIES';
+    let body = '';
+    if (stats && !stats.error && stats.n) {
+      const w = stats.worst;
+      body = `<div class="lo-stats">Your 9am hour: <b>${money(stats.pl)}</b> on ${stats.n} decisions, <b>${stats.wr}% win rate</b> vs ${stats.restWr}% every other hour.` +
+        (stats.rn ? ` Last 30 days: <b>${money(stats.rpl)}</b> on ${stats.rn}.` : '') +
+        (w ? ` Worst: <b>${money(w.pl)}</b>, ${w.qty}× ${w.strike}${(w.type || '')[0] || ''} at ${(w.time || '').slice(0, 5)} on ${w.day}.` : '') +
+        `</div>`;
+    }
+    el.innerHTML = `<div class="lo-head"><span class="lo-title">${title}</span>` +
+      `<span class="lo-count">${PREVIEW ? 'preview' : mm + ':' + ss + ' until 10:00 ET'}</span>` +
+      `<span>Let the open print. Watch, mark levels, write the plan. First entry after 10:00.</span></div>` + body;
+    el.hidden = false;
+  }
+
+  tick();
+  setInterval(tick, 1000);
+})();
 
 // Load default view
 loadView('analysis');
