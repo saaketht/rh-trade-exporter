@@ -202,3 +202,33 @@ class TestMain:
         monkeypatch.setattr(tw, "probe", lambda t: ("rejected", 401))
         tw.main(["--dry-run"])
         assert not (paths / "outputs").exists()
+
+    def test_banner_is_read_only_and_never_alerts(self, paths, monkeypatch, capsys):
+        (paths / ".rh_token").write_text(jwt(int(9e9)))
+        timeouts = []
+        monkeypatch.setattr(tw, "probe", lambda t, timeout=15: timeouts.append(timeout) or ("rejected", 401))
+        monkeypatch.setattr(tw, "notify", lambda *a: pytest.fail("banner must not alert"))
+        assert tw.main(["--banner"]) == 0
+        out = capsys.readouterr().out.splitlines()
+        assert out[0].startswith("🔴 RH token REJECTED") and out[1].startswith("  Fix: ")
+        assert timeouts == [4]
+        assert not (paths / "outputs").exists()
+
+    def test_banner_ok_has_no_fix_line(self, paths, monkeypatch, capsys):
+        (paths / ".rh_token").write_text(jwt(int(9e9)))
+        monkeypatch.setattr(tw, "probe", lambda t, timeout=15: ("ok", 200))
+        tw.main(["--banner"])
+        out = capsys.readouterr().out.splitlines()
+        assert len(out) == 1 and out[0].startswith("🟢 RH token OK")
+
+    def test_test_alert(self, paths, monkeypatch, capsys):
+        (paths / ".env").write_text("DISCORD_WEBHOOK_URL=https://hook\n")
+        got = []
+        monkeypatch.setattr(tw, "notify", lambda s, b, w, e: got.append((s, w)) or ["discord"])
+        assert tw.main(["--test-alert"]) == 0
+        assert got == [("RH token monitor test", "https://hook")]
+        assert "discord" in capsys.readouterr().out
+
+    def test_test_alert_unconfigured_exits_1(self, paths, monkeypatch):
+        assert tw.main(["--test-alert"]) == 1
+
