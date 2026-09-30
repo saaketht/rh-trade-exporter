@@ -52,8 +52,9 @@ ET = ZoneInfo("America/New_York")
 BAD = {"missing", "rejected", "expired"}
 ICON = {"ok": "🟢", "expiring": "🟡", "unknown": "⚪", "missing": "🔴", "rejected": "🔴", "expired": "🔴"}
 
+FIX_CMD = "cd ~/rh-trade-exporter && read -rs T && printf '%s\\n' \"${T#Bearer }\" > .rh_token && chmod 600 .rh_token"
 FIX = ("Fix: grab a fresh token from robinhood.com DevTools, then on gener run\n"
-       "  cd ~/rh-trade-exporter && read -rs T && printf '%s\\n' \"${T#Bearer }\" > .rh_token && chmod 600 .rh_token\n"
+       f"  {FIX_CMD}\n"
        "(paste the token at the silent prompt, press Enter). Then: .venv/bin/python token_watch.py")
 
 
@@ -88,11 +89,11 @@ def fingerprint(token: str | None) -> str | None:
     return hashlib.sha256(token.encode()).hexdigest()[:12] if token else None
 
 
-def probe(token: str, session=requests) -> tuple[str, int | None]:
+def probe(token: str, session=requests, timeout: float = 15) -> tuple[str, int | None]:
     """('ok'|'rejected'|'error', http_status) from RH's /user/."""
     try:
         r = session.get(USER_URL, headers={"Authorization": f"Bearer {token}", "Accept": "application/json",
-                                           "User-Agent": "Mozilla/5.0"}, timeout=15)
+                                           "User-Agent": "Mozilla/5.0"}, timeout=timeout)
     except requests.RequestException:
         return "error", None
     if r.status_code == 200:
@@ -213,11 +214,30 @@ def main(argv=None) -> int:
     p.add_argument("--warn-hours", type=float, default=24)
     p.add_argument("--repeat-hours", type=float, default=12)
     p.add_argument("--dry-run", action="store_true", help="Evaluate and print, but don't alert or save state")
+    p.add_argument("--banner", action="store_true",
+                   help="SSH-login mode: live check, print the status (+ fix command if bad); "
+                        "never alerts and never touches the alert state")
+    p.add_argument("--test-alert", action="store_true",
+                   help="Send a test message through the configured channels and report what was delivered")
     p.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
 
     now = datetime.now(timezone.utc).timestamp()
+    if a.test_alert:
+        sent = notify("RH token monitor test", "🧪 Test alert from token_watch.py on "
+                      f"{os.uname().nodename} — if you can read this, token alerts will reach you.",
+                      env_value("DISCORD_WEBHOOK_URL"), env_value("ALERT_EMAIL"))
+        print(f"Test alert delivered via: {', '.join(sent) or 'nothing (no DISCORD_WEBHOOK_URL / ALERT_EMAIL configured)'}")
+        return 0 if sent else 1
+
     token = read_token()
+    if a.banner:
+        cur = evaluate(token, now, probe(token, timeout=4) if token else None, a.warn_hours)
+        print(status_line(cur, now))
+        if cur["status"] in BAD | {"expiring"}:
+            print(f"  Fix: {FIX_CMD}")
+        return 0
+
     cur = evaluate(token, now, None if (a.no_probe or not token) else probe(token), a.warn_hours)
     fp = fingerprint(token)
     try:
