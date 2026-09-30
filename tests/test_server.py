@@ -870,3 +870,103 @@ class TestRunJobs:
         assert d[0]["state"] == "failed"
         # No log_path / log_tail in the listing
         assert "log_path" not in d[0]
+
+
+# ──────────────────────────────────────────────
+# API: /api/trades/split — three-group P/L split
+# ──────────────────────────────────────────────
+
+class TestTradesSplit:
+    HEADERS = ["Date", "Symbol", "Type", "Strike", "Qty", "Entry Time", "Hold Time (min)",
+               "Entry Hour", "Entry Cost", "P/L ($)", "Group ID"]
+    DAY = "2026-09-15"
+
+    def row(self, gid, time, hold, pl, typ="Call", qty=1, cost=-100, hour=None):
+        return {"Date": "9/15/2026", "Symbol": "SPY", "Type": typ, "Strike": "760", "Qty": str(qty),
+                "Entry Time": time, "Hold Time (min)": str(hold),
+                "Entry Hour": str(hour if hour is not None else int(time[:2])),
+                "Entry Cost": str(cost), "P/L ($)": str(pl), "Group ID": gid}
+
+    def bars(self, tmp_outputs, prices):
+        """prices: {"HH:MM": open} for 5-min bars on DAY (ET)."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        server._BARS_CACHE.clear()
+        (tmp_outputs / "spy_intraday").mkdir(exist_ok=True)
+        bars = [{"t": int(datetime.fromisoformat(f"{self.DAY}T{hm}:00").replace(tzinfo=ZoneInfo("America/New_York")).timestamp()),
+                 "o": o, "h": o, "l": o, "c": o, "v": 1} for hm, o in prices.items()]
+        (tmp_outputs / "spy_intraday" / f"{self.DAY}.json").write_text(json.dumps({"date": self.DAY, "bars": bars}))
+
+    def split(self, client, tmp_outputs, rows):
+        write_csv(tmp_outputs / "spy_trades.csv", self.HEADERS, rows)
+        return client.get("/api/trades/split").json()
+
+    def group_of(self, body, gid):
+        return next(o for o in body["orders"] if o["group_id"] == gid)["group"]
+
+    def test_empty(self, client, tmp_outputs):
+        body = client.get("/api/trades/split").json()
+        assert body["groups"] == {"entry_leak": {"n": 0, "pl": 0}, "hold_leak": {"n": 0, "pl": 0}, "clean": {"n": 0, "pl": 0}}
+        assert body["months"] == [] and body["orders"] == []
+
+    def test_9am_entry_is_entry_leak(self, client, tmp_outputs):
+        body = self.split(client, tmp_outputs, [self.row("a", "09:45:00", 5, 50)])
+        assert self.group_of(body, "a") == "entry_leak"
+        assert "9am" in body["orders"][0]["reason"]
+
+    def test_reentry_after_red_exit_is_entry_leak(self, client, tmp_outputs):
+        body = self.split(client, tmp_outputs, [
+            self.row("red", "10:00:00", 5, -40),     # exits 10:05, red
+            self.row("chase", "10:12:00", 5, 30),    # 7 min later
+            self.row("late", "10:40:00", 5, 30),     # 23 min after the chase exit
+        ])
+        assert self.group_of(body, "red") == "clean"
+        assert self.group_of(body, "chase") == "entry_leak"
+        assert self.group_of(body, "late") == "clean"
+
+    def test_reentry_after_green_exit_is_clean(self, client, tmp_outputs):
+        body = self.split(client, tmp_outputs, [
+            self.row("green", "10:00:00", 5, 40),
+            self.row("next", "10:08:00", 5, -10),
+        ])
+        assert self.group_of(body, "next") == "clean"
+
+    def test_held_underwater_past_30m_is_hold_leak(self, client, tmp_outputs):
+        # Call entered 10:02; underlying falls 760 → 758 by 10:32 → underwater at +30m.
+        self.bars(tmp_outputs, {"10:00": 760, "10:30": 758})
+        body = self.split(client, tmp_outputs, [self.row("held", "10:02:00", 60, -120)])
+        assert self.group_of(body, "held") == "hold_leak"
+        assert body["rescue"] == {"underwater_at_30": 1, "ended_green": 0}
+
+    def test_put_direction_is_inverted(self, client, tmp_outputs):
+        # Same falling tape favours a put → not underwater.
+        self.bars(tmp_outputs, {"10:00": 760, "10:30": 758})
+        body = self.split(client, tmp_outputs, [self.row("put", "10:02:00", 60, -20, typ="Put")])
+        assert self.group_of(body, "put") == "clean"
+        assert body["rescue"]["underwater_at_30"] == 0
+
+    def test_short_hold_skips_30m_check(self, client, tmp_outputs):
+        self.bars(tmp_outputs, {"10:00": 760, "10:30": 758})
+        body = self.split(client, tmp_outputs, [self.row("quick", "10:02:00", 20, -30)])
+        assert self.group_of(body, "quick") == "clean"
+
+    def test_missing_bars_counted_not_guessed(self, client, tmp_outputs):
+        body = self.split(client, tmp_outputs, [self.row("nobars", "10:02:00", 60, -120)])
+        assert self.group_of(body, "nobars") == "clean"
+        assert body["hold_check_missing"] == 1
+
+    def test_entry_leak_takes_precedence(self, client, tmp_outputs):
+        self.bars(tmp_outputs, {"09:40": 760, "10:10": 757})
+        body = self.split(client, tmp_outputs, [self.row("both", "09:42:00", 60, -200)])
+        assert self.group_of(body, "both") == "entry_leak"
+        assert body["rescue"]["underwater_at_30"] == 1   # still counted in the rescue stat
+
+    def test_scale_out_rows_aggregate_to_one_order(self, client, tmp_outputs):
+        body = self.split(client, tmp_outputs, [
+            self.row("g", "11:00:00", 5, 60, qty=2, cost=-200),
+            self.row("g", "11:00:00", 12, -20, qty=1, cost=-100),
+        ])
+        assert len(body["orders"]) == 1
+        o = body["orders"][0]
+        assert o["qty"] == 3 and o["cost"] == 300 and o["pl"] == 40 and o["hold"] == 12
+        assert body["months"] == [{"month": "2026-09", "entry_leak": 0, "hold_leak": 0, "clean": 40, "total": 40}]

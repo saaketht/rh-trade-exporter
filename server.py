@@ -14,6 +14,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from bisect import bisect_right
+from zoneinfo import ZoneInfo
 
 import requests
 from fastapi import FastAPI, HTTPException, Request, Depends, Query
@@ -37,7 +39,9 @@ ADMIN_SCRIPTS = {
     "spy_daily":         [sys.executable, str(BASE_DIR / "spy_daily.py")],
     "spy_intraday":      [sys.executable, str(BASE_DIR / "spy_intraday.py")],
     "spy_intraday_back": [sys.executable, str(BASE_DIR / "spy_intraday.py"), "--backfill"],
-    # Combined: runs hood → cash_flow → spy_intraday → spy_daily, abort-on-fail.
+    "option_intraday":   [sys.executable, str(BASE_DIR / "option_intraday.py")],
+    "token_watch":       [sys.executable, str(BASE_DIR / "token_watch.py")],
+    # Combined: runs hood → cash_flow → spy_intraday → spy_daily → option_intraday, abort-on-fail.
     # Emits [STEP] markers so the UI can mirror per-step status to child rows.
     "daily_refresh":     [sys.executable, "-u", str(BASE_DIR / "daily_refresh.py")],
 }
@@ -245,6 +249,168 @@ def get_daily(_=Depends(verify_token)):
         cum += day["pl"]
         day["cumulative_pl"] = round(cum, 2)
     return sorted_days
+
+# --- Three-group P/L split -------------------------------------------------
+# Classifies every SPY opening order (Group ID) by facts known at the click, or at
+# the 30-minute hold decision, into three groups (first match wins):
+#   entry_leak — entered in the 9am hour, or re-entered <=10 min after a red exit
+#   hold_leak  — held >30 min while the underlying was against the position at +30m
+#   clean      — everything else
+# Derived and validated out-of-sample on 2026-09-29 (see memory / chat). The 30-min
+# check uses SPY 5-min bar OPENS from outputs/spy_intraday (no lookahead), so it is
+# underlying direction, not the option's mark.
+
+_ET = ZoneInfo("America/New_York")
+_BARS_CACHE: dict[str, tuple] = {}
+SPLIT_REENTRY_MIN = 10
+SPLIT_HOLD_MIN = 30
+
+
+def _bars_for(date: str):
+    """(times, opens) for a cached intraday day, memoized by file mtime. Empty if missing."""
+    path = OUTPUTS_DIR / "spy_intraday" / f"{date}.json"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return [], []
+    hit = _BARS_CACHE.get(str(path))
+    if hit and hit[0] == mtime:
+        return hit[1], hit[2]
+    try:
+        bars = json.loads(path.read_text()).get("bars") or []
+    except (json.JSONDecodeError, OSError):
+        bars = []
+    bars = sorted((b for b in bars if b.get("t") is not None and b.get("o") is not None), key=lambda b: b["t"])
+    t, o = [b["t"] for b in bars], [b["o"] for b in bars]
+    _BARS_CACHE[str(path)] = (mtime, t, o)
+    return t, o
+
+
+def _underlying_at(date: str, dt: datetime) -> Optional[float]:
+    """Open of the 5-min bar containing dt (ET-naive). None if no bar covers it."""
+    t, o = _bars_for(date)
+    if not t:
+        return None
+    ts = dt.replace(tzinfo=_ET).timestamp()
+    i = bisect_right(t, ts) - 1
+    if i < 0 or ts - t[i] >= 300:
+        return None
+    return o[i]
+
+
+def _parse_entry(date: Optional[str], entry_time: Optional[str]) -> Optional[datetime]:
+    if not date or not entry_time:
+        return None
+    tm = str(entry_time)
+    if tm.count(":") == 1:
+        tm += ":00"
+    try:
+        return datetime.fromisoformat(f"{date}T{tm}")
+    except ValueError:
+        return None
+
+
+def compute_pl_split(rows: list[dict]) -> dict:
+    """Group exit rows into opening orders and classify each into the three groups."""
+    orders: dict[str, dict] = {}
+    for r in rows:
+        gid = r.get("group_id")
+        entry = _parse_entry(r.get("date"), r.get("entry_time"))
+        if not gid or entry is None:
+            continue
+        hold = r.get("hold_time_min") or 0
+        o = orders.get(gid)
+        if o is None:
+            o = orders[gid] = {
+                "group_id": gid, "date": r["date"], "entry_time": r.get("entry_time"),
+                "entry": entry, "hour": r.get("entry_hour") if r.get("entry_hour") is not None else entry.hour,
+                "type": r.get("type"), "strike": r.get("strike"), "qty": 0, "cost": 0.0, "pl": 0.0,
+                "hold": 0.0, "exit": entry, "exit_date": r.get("exit_date") or r["date"],
+            }
+        o["qty"] += r.get("qty") or 0
+        o["cost"] += -(r.get("entry_cost") or 0)
+        o["pl"] += r.get("pl") or 0
+        if hold >= o["hold"]:
+            o["hold"] = hold
+            o["exit_date"] = r.get("exit_date") or o["exit_date"]
+        o["exit"] = max(o["exit"], entry + timedelta(minutes=float(hold)))
+
+    by_day: dict[str, list] = {}
+    for o in orders.values():
+        by_day.setdefault(o["date"], []).append(o)
+
+    missing = 0
+    rescue_n = rescue_won = 0
+    for day, os_ in by_day.items():
+        os_.sort(key=lambda x: x["entry"])
+        for o in os_:
+            closed = [p for p in os_ if p is not o and p["entry"] < o["entry"] and p["exit"] <= o["entry"]]
+            last = max(closed, key=lambda p: p["exit"]) if closed else None
+            gap = (o["entry"] - last["exit"]).total_seconds() / 60 if last else None
+            o["reentry_after_red"] = bool(last and last["pl"] < 0 and gap is not None and gap <= SPLIT_REENTRY_MIN)
+
+            o["underwater_30"] = None
+            if o["hold"] > SPLIT_HOLD_MIN:
+                s0 = _underlying_at(day, o["entry"])
+                s30 = _underlying_at(day, o["entry"] + timedelta(minutes=SPLIT_HOLD_MIN))
+                if s0 is None or s30 is None:
+                    missing += 1
+                else:
+                    sign = 1 if (o["type"] or "").lower().startswith("c") else -1
+                    o["underwater_30"] = (s30 - s0) * sign < 0
+                    if o["underwater_30"]:
+                        rescue_n += 1
+                        rescue_won += o["pl"] > 0
+
+            reasons = []
+            if o["hour"] == 9:
+                reasons.append("9am entry")
+            if o["reentry_after_red"]:
+                reasons.append(f"re-entry {gap:.0f}m after a red exit")
+            if reasons:
+                o["group"] = "entry_leak"
+            elif o["underwater_30"]:
+                o["group"] = "hold_leak"
+                reasons.append(f"red at 30m, held {o['hold']:.0f}m")
+            else:
+                o["group"] = "clean"
+            o["reason"] = ", ".join(reasons)
+
+    groups = {k: {"n": 0, "pl": 0.0} for k in ("entry_leak", "hold_leak", "clean")}
+    months: dict[str, dict] = {}
+    for o in orders.values():
+        groups[o["group"]]["n"] += 1
+        groups[o["group"]]["pl"] += o["pl"]
+        m = months.setdefault(o["exit_date"][:7], {"month": o["exit_date"][:7], "entry_leak": 0.0, "hold_leak": 0.0, "clean": 0.0})
+        m[o["group"]] += o["pl"]
+    month_list = []
+    for m in sorted(months.values(), key=lambda x: x["month"]):
+        for k in ("entry_leak", "hold_leak", "clean"):
+            m[k] = round(m[k], 2)
+        m["total"] = round(m["entry_leak"] + m["hold_leak"] + m["clean"], 2)
+        month_list.append(m)
+    for g in groups.values():
+        g["pl"] = round(g["pl"], 2)
+
+    out_orders = sorted(orders.values(), key=lambda x: x["entry"], reverse=True)
+    return {
+        "groups": groups,
+        "months": month_list,
+        "rescue": {"underwater_at_30": rescue_n, "ended_green": rescue_won},
+        "hold_check_missing": missing,
+        "orders": [
+            {k: (round(v, 2) if isinstance(v, float) else v) for k, v in o.items()
+             if k in ("group_id", "date", "exit_date", "entry_time", "type", "strike", "qty", "cost", "pl", "hold", "group", "reason")}
+            for o in out_orders
+        ],
+    }
+
+
+@app.get("/api/trades/split")
+def get_trades_split(_=Depends(verify_token)):
+    """Three-group P/L split of SPY opening orders — see compute_pl_split."""
+    return compute_pl_split(_read_csv("spy_trades.csv"))
+
 
 @app.get("/api/trades/open")
 def get_open(_=Depends(verify_token)):
