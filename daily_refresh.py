@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Daily refresh orchestrator: hood → cash_flow → spy_intraday → spy_daily.
+"""Daily refresh orchestrator: hood → cash_flow → spy_intraday → spy_daily → option_intraday.
+
+option_intraday runs last so a problem there can never block the core refresh.
 
 Invoked from the admin panel ("Daily refresh" button). Runs each step
 sequentially, aborting on the first non-zero exit so a stale RH token (which
@@ -30,6 +32,7 @@ STEPS = [
     ("cash_flow",    [PY, "-u", str(BASE / "cash_flow.py")]),
     ("spy_intraday", [PY, "-u", str(BASE / "spy_intraday.py")]),
     ("spy_daily",    [PY, "-u", str(BASE / "spy_daily.py")]),
+    ("option_intraday", [PY, "-u", str(BASE / "option_intraday.py")]),
 ]
 
 

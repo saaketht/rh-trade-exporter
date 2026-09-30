@@ -9,8 +9,10 @@ DIR="$(dirname "$SCRIPT_DIR")"
 cd "$DIR"
 
 LOG="$DIR/cron.log"
-DISCORD_WEBHOOK="${DISCORD_WEBHOOK_URL:-}"
-EMAIL="${ALERT_EMAIL:-}"
+# Alert settings: crontab env first, then .env (gitignored) as a fallback.
+env_file_value() { grep -E "^$1=" "$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"'"; }
+DISCORD_WEBHOOK="${DISCORD_WEBHOOK_URL:-$(env_file_value DISCORD_WEBHOOK_URL)}"
+EMAIL="${ALERT_EMAIL:-$(env_file_value ALERT_EMAIL)}"
 
 echo "===== $(date '+%Y-%m-%d %H:%M:%S') =====" >> "$LOG"
 
@@ -35,6 +37,14 @@ else
     fi
 
     exit $EXIT_CODE
+fi
+
+# Capture 5m bars for today's option contracts before RH ages them out (~1-2 weeks for 5m).
+# Self-heals: also re-captures any day in the last week that a failed run missed.
+if .venv/bin/python option_intraday.py --json >> "$LOG" 2>&1; then
+    echo "✅ option_intraday.py success" >> "$LOG"
+else
+    echo "⚠️ option_intraday.py failed (non-fatal)" >> "$LOG"
 fi
 
 # Run cash flow snapshot
