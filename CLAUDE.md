@@ -242,6 +242,8 @@ Older live snapshots (pre-2026-05) lack `accounts`, `gold_months`, and `*_pendin
 
 **VPS state as first checked 2026-09-30 (`ssh gener`, repo at `/home/gener/rh-trade-exporter`):** cron only — no uvicorn process, `rh-trade-exporter.service` not installed, nginx inactive, so the dashboard/Admin page is not reachable there. Repo was 1 commit behind GitHub (at `93b3ba9`). The crontab defined the webhook as `DISCORD_WEBHOOD_URL` (typo) so run.sh's failure alerts never fired; `ALERT_EMAIL` unset. Python 3.11, timezone America/New_York.
 
+**Email alerts never leave gener (checked 2026-10-26).** `ALERT_EMAIL` is now set in the crontab, but `mail` (bsd-mailx) hands off to exim4 configured `dc_eximconfig_configtype='local'`, which bounces every external address ("Mailing to remote domains not supported", 13 bounces in `/var/mail/gener` since Oct 1). `mail` exits 0 once exim queues the message, so `token_watch.log` still says "sent via discord, email". **Decision 2026-10-26: Discord-only.** `ALERT_EMAIL` removed from gener's crontab rather than fixing exim. If email is ever wanted: gener is a GCE VM (europe-west4) and GCE blocks outbound port 25, so it needs exim as a smarthost on port 587 (e.g. `smtp.gmail.com::587` + an app password in `/etc/exim4/passwd.client`), not "internet site".
+
 **Token monitor + login banner on gener** (after pulling):
 ```
 # crontab -e
