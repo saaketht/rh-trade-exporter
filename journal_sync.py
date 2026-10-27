@@ -1,7 +1,7 @@
 """
 journal_sync.py — Merge hood.py CSV output into spy_0dte_journal.xlsx.
 
-Appends only new trades (dedup by Date + Entry Time + Strike + Type + Qty).
+Appends only new trades (dedup by Date + Entry Time + Strike + Type + Qty + Exit Time).
 Preserves existing rows, formulas, formatting, and the Setup/Notes columns
 (AA-AE) for manual fill by the user.
 
@@ -177,15 +177,18 @@ def _coerce_trend(s):
     return "N/A"
 
 
-def dedup_key(trade_date, entry_time_obj, strike, opt_type, qty):
-    """Composite key: (date iso, time iso, strike float, type lowercase, qty int).
-    Robust against minor format variations."""
+def dedup_key(trade_date, entry_time_obj, strike, opt_type, qty, exit_time_obj=None):
+    """Composite key: (date iso, entry iso, strike float, type lowercase, qty int, exit iso).
+    Robust against minor format variations. Exit time is part of the key because one
+    position scaled out in equal-size pieces gives rows that differ only by exit —
+    without it, once the first piece is in the journal every later one is skipped."""
     return (
         trade_date.isoformat() if trade_date else None,
         entry_time_obj.isoformat() if entry_time_obj else None,
         float(strike) if strike is not None else None,
         str(opt_type).strip().lower() if opt_type else None,
         int(qty) if qty is not None else None,
+        exit_time_obj.isoformat() if exit_time_obj else None,
     )
 
 
@@ -211,17 +214,20 @@ def load_journal(path: Path):
         strike = ws.cell(r, COL["strike"]).value
         opt_type = ws.cell(r, COL["type"]).value
         qty = ws.cell(r, COL["qty"]).value
+        x = ws.cell(r, COL["exit_time"]).value
 
         if isinstance(d, datetime):
             d = d.date()
         if isinstance(t, datetime):
             t = t.time()
+        if isinstance(x, datetime):
+            x = x.time()
 
         if d and isinstance(d, date) and (max_date is None or d > max_date):
             max_date = d
 
         if d and t and strike is not None and opt_type and qty is not None:
-            existing.add(dedup_key(d, t, strike, opt_type, qty))
+            existing.add(dedup_key(d, t, strike, opt_type, qty, x))
 
     return wb, ws, last_row, existing, max_date
 
@@ -241,11 +247,12 @@ def load_csv_trades(csv_path: Path, existing_keys: set) -> list[dict]:
             strike = parse_number(row.get("Strike"))
             opt_type = row.get("Type", "")
             qty = parse_int(row.get("Qty"))
+            exit_t = parse_csv_time(row.get("Exit Time", ""))
 
             if not (trade_date and entry_t and strike is not None and opt_type and qty is not None):
                 continue
 
-            key = dedup_key(trade_date, entry_t, strike, opt_type, qty)
+            key = dedup_key(trade_date, entry_t, strike, opt_type, qty, exit_t)
             if key in existing_keys:
                 skipped += 1
                 continue
@@ -267,7 +274,7 @@ def load_csv_trades(csv_path: Path, existing_keys: set) -> list[dict]:
                 "vwap": _coerce_trend(row.get("VWAP")),
                 "ema8": _coerce_trend(row.get("8 EMA")),
                 "entry_time": entry_t,
-                "exit_time": parse_csv_time(row.get("Exit Time", "")),
+                "exit_time": exit_t,
                 "entry_cost": parse_number(row.get("Entry Cost")),
                 "exit_credit": parse_number(row.get("Exit Credit")),
                 "vix": parse_number(row.get("VIX")),

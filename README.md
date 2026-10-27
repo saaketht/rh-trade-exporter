@@ -232,7 +232,7 @@ python journal_sync.py --fetch            # auto-run hood.py first with --after-
 python journal_sync.py --journal <path> --csv <path> --output <path>
 ```
 
-- Dedup key is `(Date, Entry Time, Strike, Type, Qty)` — format-independent across re-runs.
+- Dedup key is `(Date, Entry Time, Strike, Type, Qty, Exit Time)` — format-independent across re-runs; Exit Time keeps equal-size scale-outs from being skipped.
 - Per-row formulas (Trend Aligned, Hold Time, Entry Hour, P/L $/%, Cumulative P/L, Win/Loss, Is Win, Risk $, R-Multiple) are re-emitted from row 2 patterns with row substitution.
 - Excel table (`Table2`) range is extended so appended rows are part of the formatted table.
 - After save (unless `--in-place`), every existing row is diff'd cell-by-cell against the original. Aborts with exit code 2 on any difference.

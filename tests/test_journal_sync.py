@@ -29,7 +29,45 @@ class TestDedupKey:
 
     def test_none_fields_pass_through(self):
         k = js.dedup_key(None, None, None, None, None)
-        assert k == (None, None, None, None, None)
+        assert k == (None, None, None, None, None, None)
+
+    def test_exit_time_distinguishes_equal_size_scale_outs(self):
+        args = (date(2026, 4, 23), time(9, 30), 580, "call", 1)
+        assert js.dedup_key(*args, time(9, 40)) != js.dedup_key(*args, time(9, 50))
+
+
+class TestPartialExitSync:
+    """One 2-lot position closed 1 + 1. The first exit is already in the journal;
+    the second must still be appended (the old key skipped it)."""
+
+    def _journal(self, tmp_path):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = js.SHEET_NAME
+        for c in range(1, 38):
+            ws.cell(row=1, column=c, value=f"H{c}")
+        vals = {"date": date(2026, 4, 23), "entry_time": time(9, 30), "exit_time": time(9, 40),
+                "strike": 580.0, "type": "Call", "qty": 1}
+        for k, v in vals.items():
+            ws.cell(2, js.COL[k], value=v)
+        path = tmp_path / "journal.xlsx"
+        wb.save(path)
+        return path
+
+    def _csv(self, tmp_path):
+        path = tmp_path / "spy_trades.csv"
+        path.write_text(
+            "Date,Entry Time,Exit Time,Strike,Type,Qty\n"
+            "4/23/2026,09:30:00,09:40:00,580,Call,1\n"
+            "4/23/2026,09:30:00,09:50:00,580,Call,1\n"
+        )
+        return path
+
+    def test_second_equal_size_exit_is_appended(self, tmp_path):
+        _, _, _, keys, _ = js.load_journal(self._journal(tmp_path))
+        new, skipped = js.load_csv_trades(self._csv(tmp_path), keys)
+        assert skipped == 1
+        assert [t["exit_time"] for t in new] == [time(9, 50)]
 
 
 # ───────────────────────── _coerce_trend ─────────────────────────
