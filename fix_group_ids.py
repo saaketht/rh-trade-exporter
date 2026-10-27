@@ -131,6 +131,10 @@ def main():
         all_fallback.update(fallback)
         print(f"📄 {name}: {before_rows} → {len(df)} rows, P/L ${before_pl:,.0f} → ${df['P/L ($)'].sum():,.0f}")
         print("\n".join(log) if log else "  nothing to fix")
+        frag = int(df.duplicated(["Group ID", "Exit Time"]).sum())
+        if frag:
+            print(f"  ℹ {frag} rows share a (Group ID, Exit Time) with another row: order fragments from "
+                  f"before order_id aggregation. Totals are right, row counts aren't — regroup_trades.py fixes that.")
         if log:
             changed[path] = hood.finalize_trade_df(df.reset_index(drop=True))
 

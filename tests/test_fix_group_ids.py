@@ -86,6 +86,16 @@ def test_two_g_legs_of_a_spread_end_up_distinct(tmp_path, monkeypatch):
     assert ids == ["2023-12-08-093421-13.5C", "2023-12-08-093421-13.5C-20240105"]
 
 
+def test_reports_order_fragments(tmp_path, monkeypatch, capsys):
+    # Two identical G rows with no stable twin = one order filled in two pieces (legacy,
+    # pre-aggregation). Both get the same derived ID; the report flags them, doesn't drop.
+    write(tmp_path, "other_trades.csv", [row("G31", symbol="ET"), row("G32", symbol="ET")])
+    run(tmp_path, monkeypatch)
+    out = capsys.readouterr().out
+    assert "1 rows share a (Group ID, Exit Time)" in out
+    assert "drop" not in out
+
+
 def test_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
     write(tmp_path, "spy_trades.csv", [row("G1"), row("2026-04-22-093443-702P")])
     before = (tmp_path / "spy_trades.csv").read_text()
