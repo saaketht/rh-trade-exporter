@@ -10,14 +10,18 @@ cd "$DIR"
 
 LOG="$DIR/cron.log"
 # Alert settings: crontab env first, then .env (gitignored) as a fallback.
-env_file_value() { grep -E "^$1=" "$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"'"; }
+# `|| true`: a missing .env or key must not trip `set -euo pipefail` (grep exits 1/2),
+# which would kill the run silently before the log header is written.
+env_file_value() { grep -E "^$1=" "$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"'" || true; }
 DISCORD_WEBHOOK="${DISCORD_WEBHOOK_URL:-$(env_file_value DISCORD_WEBHOOK_URL)}"
 EMAIL="${ALERT_EMAIL:-$(env_file_value ALERT_EMAIL)}"
 
 echo "===== $(date '+%Y-%m-%d %H:%M:%S') =====" >> "$LOG"
 
-# Run the export
-if .venv/bin/python hood.py --after-date "$(date -d '-1 day' +%Y-%m-%d)" --symbol SPY >> "$LOG" 2>&1; then
+# Run the export. No --after-date / --symbol: hood.py derives its cursor from the
+# existing CSVs, so a day a failed run missed (e.g. dead token) is refetched on the
+# next success, and non-SPY trades + unmatched opens stay current too.
+if .venv/bin/python hood.py >> "$LOG" 2>&1; then
     echo "✅ hood.py success" >> "$LOG"
 else
     EXIT_CODE=$?
