@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """One-time journal migration after the order_id regroup.
 
 The Trade Log in spy_0dte_journal.xlsx was built from the legacy fragmented CSV.

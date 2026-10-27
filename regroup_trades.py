@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """One-time migration: regroup spy_trades.csv / other_trades.csv by order_id.
 
 The legacy CSVs were built by pairing at the *execution* level, so one order

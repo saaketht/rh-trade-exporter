@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """SPY + VIX daily OHLC cache.
 
 Fetches end-of-day OHLC for SPY and VIX from yfinance and persists to

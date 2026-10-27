@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Warn before the Robinhood token dies, and alert when it already has.
 
 Runs from cron on the VPS (hourly, daytime). Reads the JWT's `exp` claim for

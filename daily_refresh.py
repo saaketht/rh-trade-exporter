@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Daily refresh orchestrator: hood → cash_flow → spy_intraday → spy_daily → option_intraday.
 
 option_intraday runs last so a problem there can never block the core refresh.

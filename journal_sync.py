@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 journal_sync.py — Merge hood.py CSV output into spy_0dte_journal.xlsx.
 

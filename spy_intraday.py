@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """SPY intraday 5-minute bars from Polygon (massive.com).
 
 Caches one day of bars per file at outputs/spy_intraday/{YYYY-MM-DD}.json.

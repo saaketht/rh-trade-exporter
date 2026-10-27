@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Nightly capture of intraday price bars for the option contracts you traded.
 
 Why: Robinhood's option price history is only reachable for a short time.

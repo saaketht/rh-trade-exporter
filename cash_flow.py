@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Cash flow summary — pulls all money movement from Robinhood and calculates net P/L.
 
