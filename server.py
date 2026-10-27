@@ -105,6 +105,8 @@ COLUMN_MAP = {
     "Delta": "delta",
     "Group ID": "group_id",
     "DTE": "dte",
+    "Fees ($)": "fees",
+    "Net P/L ($)": "net_pl",
     # unmatched_opens.csv-only columns
     "Expiry": "expiry",
     "Side": "side",
@@ -117,7 +119,7 @@ FLOAT_FIELDS = {
     "strike", "open", "high", "low", "close", "vwap", "ema8",
     "hold_time_min", "entry_cost", "risk", "exit_credit",
     "pl", "cumulative_pl", "pl_pct", "vix", "delta",
-    "entry_price_share",
+    "entry_price_share", "fees", "net_pl",
 }
 
 def _normalize_date(d: str) -> str:

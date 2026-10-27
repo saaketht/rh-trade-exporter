@@ -1,5 +1,6 @@
 """Tests for hood.py pure logic — no network calls."""
 
+import pandas as pd
 import pytest
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
@@ -371,6 +372,50 @@ class TestGroupIds:
         assert hood.expiry_suffix("2024-01-05") == hood.expiry_suffix("1/5/2024") == "-20240105"
 
 
+class TestFees:
+    def _order(self, legs, reg="0.04", contract="0.04"):
+        return {"id": "o1", "account_number": "12345", "regulatory_fees": reg, "contract_fees": contract,
+                "legs": [{"position_effect": "open", "side": "buy", "option": url,
+                          "executions": [{"quantity": str(q), "price": "1.00",
+                                          "timestamp": "2026-03-20T14:00:00Z"}]} for url, q in legs]}
+
+    def test_order_fees_spread_over_every_contract_across_legs(self, monkeypatch):
+        # Straddle: 1 call + 3 puts, $0.08 total → $0.02 per contract on both legs.
+        monkeypatch.setattr(hood, "resolve_option_instrument", lambda url, headers: {})
+        execs = hood.parse_executions([self._order([("C", 1), ("P", 3)])], headers={})
+        assert [e["fee_per_contract"] for e in execs] == [0.02, 0.02]
+
+    def test_order_without_fees(self, monkeypatch):
+        monkeypatch.setattr(hood, "resolve_option_instrument", lambda url, headers: {})
+        execs = hood.parse_executions([self._order([("C", 2)], reg="0", contract="0")], headers={})
+        assert execs[0]["fee_per_contract"] == 0.0
+
+    def test_row_gets_open_and_close_share(self):
+        # Open 2 at $0.04/ct, scale out 1 + 1 at $0.04/ct → $0.08 per row.
+        o = _make_exec("open", "buy", 2, 1.00, order_id="o_open")
+        c1 = _make_exec("close", "sell", 1, 1.50, ts_offset_min=5, order_id="o_c1")
+        c2 = _make_exec("close", "sell", 1, 0.50, ts_offset_min=9, order_id="o_c2")
+        for e in (o, c1, c2):
+            e["fee_per_contract"] = 0.04
+        rows, _ = hood.pair_into_trade_rows([o, c1, c2])
+        assert [r["fees"] for r in rows] == [0.08, 0.08]
+        assert [r["pl"] for r in rows] == [50.0, -50.0]
+
+    def test_expired_worthless_charges_entry_fee_only(self):
+        rec = {**_make_exec("open", "buy", 3, 1.00), "unmatched_qty": 3, "fee_per_contract": 0.04,
+               "group_id": "x"}
+        rows, _ = hood.resolve_expired_opens([rec], {rec["option_url"]})
+        assert rows[0]["fees"] == 0.12
+
+    def test_synthesized_expiry_close_has_no_fee(self):
+        import regroup_trades as rg
+        o = {**_make_exec("open", "buy", 1, 1.00, chain_symbol="ET", expiry="2024-01-05"),
+             "fee_per_contract": 0.04}
+        closes = [e for e in rg.add_expired_otm_closes([o], datetime(2026, 1, 1).date())
+                  if e["position_effect"] == "close"]
+        assert closes and closes[0]["fee_per_contract"] == 0.0
+
+
 def _make_bars(n=10, date="2026-03-20"):
     """Generate n 5-min bars starting at 9:30 ET (13:30 UTC)."""
     bars = []
@@ -595,6 +640,19 @@ class TestBuildTradeDf:
             "ema8": 581.20,
             "delta": 0.45,
         }]
+
+    def test_fee_columns(self):
+        rows = self._make_paired_rows()
+        rows[0]["fees"] = 0.16
+        df = hood.build_trade_df(rows, {})
+        assert df.iloc[0]["P/L ($)"] == 200          # gross stays gross
+        assert df.iloc[0]["Fees ($)"] == 0.16
+        assert df.iloc[0]["Net P/L ($)"] == 199.84
+        assert list(df.columns)[-2:] == ["Fees ($)", "Net P/L ($)"]   # appended, nothing shifts
+
+    def test_fee_columns_blank_without_fee_data(self):
+        df = hood.build_trade_df(self._make_paired_rows(), {})
+        assert pd.isna(df.iloc[0]["Fees ($)"]) and pd.isna(df.iloc[0]["Net P/L ($)"])
 
     def test_basic_output_columns(self):
         rows = self._make_paired_rows()

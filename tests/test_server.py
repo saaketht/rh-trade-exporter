@@ -634,7 +634,7 @@ class TestColumnMap:
             "Asset Open,Asset High,Asset Low,Asset Close,VWAP,8 EMA,"
             "Entry Time,Exit Time,Hold Time (min),Entry Hour,Entry Cost,"
             "Risk ($),Exit Credit,P/L ($),Cumulative P/L ($),P/L (%),"
-            "Win/Loss,Is Win,VIX,Delta,Group ID,DTE"
+            "Win/Loss,Is Win,VIX,Delta,Group ID,DTE,Fees ($),Net P/L ($)"
         )
         for col in csv_header.split(","):
             assert col in COLUMN_MAP, f"CSV column '{col}' not in COLUMN_MAP"

@@ -101,6 +101,7 @@ def add_expired_otm_closes(execs: list, today: date) -> list:
             "side": "sell" if proto["side"] == "buy" else "buy",
             "quantity": net,
             "price_per_share": 0.0,
+            "fee_per_contract": 0.0,   # expiring worthless has no fee (proto is the open)
         })
         extra.append(c)
     if extra:

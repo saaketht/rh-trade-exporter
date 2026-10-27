@@ -403,6 +403,12 @@ def parse_executions(orders: list[dict], headers: dict) -> list[dict]:
             continue
 
         order_id = order.get("id")
+        # RH reports fees per order (net_amount = processed_premium ± fees, to the cent).
+        # Spread them evenly over every contract the order filled, across all legs.
+        order_fees = float(order.get("regulatory_fees") or 0) + float(order.get("contract_fees") or 0)
+        order_qty = sum(float(e.get("quantity", 0))
+                        for leg in order.get("legs", []) for e in leg.get("executions", []))
+        fee_per_contract = order_fees / order_qty if order_qty else 0.0
         for leg in order.get("legs", []):
             position_effect = leg.get("position_effect", "").lower()
             side = leg.get("side", "").lower()
@@ -435,6 +441,7 @@ def parse_executions(orders: list[dict], headers: dict) -> list[dict]:
                     "chain_symbol": inst.get("chain_symbol", ""),
                     "option_url": option_url,
                     "account_number": order.get("account_number", ""),
+                    "fee_per_contract": fee_per_contract,
                 })
 
     executions.sort(key=lambda e: e["dt"] or datetime.min.replace(tzinfo=timezone.utc))
@@ -613,6 +620,7 @@ def pair_into_trade_rows(executions: list[dict]) -> tuple[list[dict], list[dict]
                     pl = round(entry_cost - exit_credit, 2)
 
                 pl_pct = round((pl / entry_cost) * 100, 6) if entry_cost else 0
+                fees = round((entry.get("fee_per_contract", 0) + exit_.get("fee_per_contract", 0)) * match_qty, 2)
                 hold_min = round((exit_["dt"] - entry["dt"]).total_seconds() / 60) if entry["dt"] and exit_["dt"] else 0
 
                 entry_dt = entry["dt"]
@@ -637,6 +645,7 @@ def pair_into_trade_rows(executions: list[dict]) -> tuple[list[dict], list[dict]
                     "exit_credit": exit_credit,
                     "pl": pl,
                     "pl_pct": pl_pct,
+                    "fees": fees,
                     "hold_min": hold_min,
                     "strike_price": entry.get("strike_price"),
                     "chain_symbol": entry.get("chain_symbol", ""),
@@ -940,6 +949,7 @@ def resolve_expired_opens(unmatched_opens: list[dict], exp_urls: set) -> tuple[l
             "exit_credit": 0,
             "pl": pl,
             "pl_pct": pl_pct,
+            "fees": round(rec.get("fee_per_contract", 0) * qty, 2),   # entry only: expiry has no fee
             "hold_min": hold_min,
             "strike_price": rec.get("strike_price"),
             "chain_symbol": rec.get("chain_symbol", ""),
@@ -1266,6 +1276,10 @@ def build_trade_df(rows: list[dict], market: dict,
             "Delta": r.get("delta", None),
             "Group ID": r["group_id"],
             "DTE": r["dte"],
+            # Gross P/L ($) stays as-is (the journal's formulas use it); fees are RH's
+            # regulatory + contract fees for the open and close share of this row.
+            "Fees ($)": r.get("fees"),
+            "Net P/L ($)": round(r["pl"] - r["fees"], 2) if r.get("fees") is not None else None,
         })
 
     for i, row in enumerate(output, start=1):

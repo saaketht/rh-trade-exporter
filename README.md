@@ -66,6 +66,8 @@ These are the columns I use for journaling.
 | Delta | RH API | Option delta at time of export (same-day only, null for expired) |
 | Group ID | Derived | Links rows from the same opening position |
 | DTE | Derived | Days to expiration at entry |
+| Fees ($) | RH API | Regulatory + contract fees for this row's share of the open and close orders (cents) |
+| Net P/L ($) | Derived | P/L ($) − Fees ($) |
 
 ### Trade Pairing Logic
 
