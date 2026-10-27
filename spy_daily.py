@@ -45,7 +45,7 @@ def _earliest_trade_date() -> date | None:
         if not len(dates):
             return None
         return dates.min().date()
-    except Exception:
+    except (OSError, ValueError):
         return None
 
 
@@ -58,7 +58,7 @@ def _series_from_yf(symbol: str, start: date, end: date) -> dict[str, dict]:
         df = yf.download(symbol, start=start.isoformat(),
                          end=(end + timedelta(days=1)).isoformat(),
                          progress=False, auto_adjust=False)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"  ⚠ {symbol}: yfinance error: {e}", file=sys.stderr)
         return {}
     if df is None or df.empty:

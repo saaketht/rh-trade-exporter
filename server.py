@@ -161,7 +161,7 @@ def _compute_exit_date(entry_date: Optional[str], entry_time: Optional[str], hol
         entry_dt = datetime.fromisoformat(f"{entry_date}T{t}")
         exit_dt = entry_dt + timedelta(minutes=float(hold_min))
         return exit_dt.date().isoformat()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return entry_date
 
 def _read_csv(filename: str) -> list[dict]:
@@ -432,7 +432,7 @@ def get_positions(_=Depends(verify_token)):
         try:
             ed = datetime.fromisoformat(entry_date).date() if entry_date else None
             xp = datetime.fromisoformat(expiry).date() if expiry else None
-        except Exception:
+        except Exception:  # noqa: BLE001
             ed, xp = None, None
         days_held = (today - ed).days if ed else None
         dte_remaining = (xp - today).days if xp else None
@@ -598,7 +598,7 @@ def _decode_jwt_unverified(token: str) -> dict:
         return {}
     try:
         return json.loads(_b64url_decode(parts[1]))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
 
 
@@ -789,7 +789,7 @@ def _spawn_job(script: str) -> str:
         try:
             log_file.flush()
             log_file.close()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     threading.Thread(target=_watch, daemon=True).start()

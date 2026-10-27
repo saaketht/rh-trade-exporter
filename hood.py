@@ -153,12 +153,18 @@ def load_cached_accounts() -> list[str]:
     if ACCT_CACHE_FILE.exists():
         try:
             data = json.loads(ACCT_CACHE_FILE.read_text())
-            nums = data.get("account_numbers", [])
-            if nums:
-                print(f"  📁 Loaded cached account numbers from {ACCT_CACHE_FILE}: {', '.join(nums)}")
-                return nums
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError) as e:
+            data = e
+        if not isinstance(data, dict):
+            # Don't fall back to /accounts/: it misses cash sub-accounts and the
+            # fallback would overwrite this cache with the incomplete list.
+            print(f"\n❌ {ACCT_CACHE_FILE} is unreadable ({data!r}).")
+            print('   Rerun with --account-numbers "XXXXX,YYYYY" to rebuild it.')
+            sys.exit(1)
+        nums = data.get("account_numbers", [])
+        if nums:
+            print(f"  📁 Loaded cached account numbers from {ACCT_CACHE_FILE}: {', '.join(nums)}")
+            return nums
     return []
 
 
@@ -336,7 +342,8 @@ def load_instrument_cache():
         try:
             _instrument_cache = json.loads(INSTRUMENT_CACHE_FILE.read_text())
             print(f"  📁 Loaded {len(_instrument_cache)} cached instruments from {INSTRUMENT_CACHE_FILE.name}")
-        except Exception:
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"  ⚠ {INSTRUMENT_CACHE_FILE.name} unreadable ({e}), starting with an empty cache")
             _instrument_cache = {}
 
 
@@ -407,7 +414,7 @@ def parse_executions(orders: list[dict], headers: dict) -> list[dict]:
                     if resolve_count % 20 == 0:
                         print(f"  Resolving instruments... ({resolve_count})")
                 inst = resolve_option_instrument(option_url, headers) if option_url else {}
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"  ⚠ Could not resolve {option_url}: {e}")
                 inst = {}
 
@@ -955,7 +962,7 @@ def fetch_market_data(rows: list[dict], headers: dict) -> dict:
             for date_key, ohlc in bars.items():
                 lookup[(sym, date_key)] = ohlc
             print(f"  {sym}: {len(bars)} days from RH")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"  ⚠ {sym} RH failed ({e}), falling back to yfinance...")
             try:
                 df = yf.download(sym, start=start, end=end, progress=False)
@@ -969,7 +976,7 @@ def fetch_market_data(rows: list[dict], headers: dict) -> dict:
                         "Asset Low": round(row["Low"], 2),
                         "Asset Close": round(row["Close"], 2),
                     }
-            except Exception as e2:
+            except Exception as e2:  # noqa: BLE001
                 print(f"  ⚠ {sym} yfinance also failed: {e2}")
         time_module.sleep(0.2)
 
@@ -980,7 +987,7 @@ def fetch_market_data(rows: list[dict], headers: dict) -> dict:
             vix.columns = vix.columns.get_level_values(0)
         for idx, row in vix.iterrows():
             lookup[("^VIX", idx.strftime("%Y-%m-%d"))] = round(row["Close"], 1)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"  ⚠ VIX: {e}")
 
     print(f"  → {len(lookup)} data points\n")
@@ -1029,7 +1036,7 @@ def fetch_yf_intraday(symbol: str, start_date: str, end_date: str) -> list[dict]
                 "volume": int(row["Volume"]) if not pd.isna(row["Volume"]) else 0,
             })
         return bars
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"  ⚠ {symbol} yfinance intraday failed: {e}")
         return []
 
@@ -1078,7 +1085,7 @@ def enrich_intraday(rows: list[dict], headers: dict):
         merged: list[dict] = []
         try:
             rh_bars = fetch_rh_intraday(sym, headers)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             rh_bars = []
             print(f"  ⚠ {sym} RH intraday failed: {e}")
 
@@ -1249,8 +1256,8 @@ def build_order_df(orders: list[dict], headers: dict) -> pd.DataFrame:
                     option_type = inst.get("type", "").capitalize()
                     strike = inst.get("strike_price", "")
                     expiry = inst.get("expiration_date", "")
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    print(f"  ⚠ Could not resolve {option_url}: {e}")
             leg_info = f"{leg.get('side', '')} to {leg.get('position_effect', '')}"
 
         rows.append({
@@ -1315,22 +1322,30 @@ def determine_incremental_cursor(out_dir: Path) -> str | None:
             continue
         try:
             df = pd.read_csv(p, usecols=["Date"])
-        except Exception:
+        except (OSError, ValueError) as e:
+            print(f"  ⚠ Cursor: could not read {name} ({e}), ignoring it")
             continue
         dates = pd.to_datetime(df["Date"], errors="coerce").dropna()
         if len(dates):
             d = dates.max().date()
             max_closed = d if max_closed is None else max(max_closed, d)
 
+    # Unreadable opens → full fetch. A partial window would miss older opens, and the
+    # end of main() rewrites unmatched_opens.csv from what was fetched, silently
+    # dropping those positions. A full fetch rebuilds the file correctly.
     p = out_dir / "unmatched_opens.csv"
     if p.exists():
         try:
             df = pd.read_csv(p, usecols=["Date"])
-            dates = pd.to_datetime(df["Date"], errors="coerce").dropna()
-            if len(dates):
-                oldest_open = dates.min().date()
-        except Exception:
-            pass
+        except (OSError, ValueError) as e:
+            print(f"  ⚠ Cursor: could not read unmatched_opens.csv ({e}) — doing a full fetch to rebuild it")
+            return None
+        dates = pd.to_datetime(df["Date"], errors="coerce").dropna()
+        if len(dates) < len(df):
+            print("  ⚠ Cursor: unmatched_opens.csv has unparseable dates — doing a full fetch to rebuild it")
+            return None
+        if len(dates):
+            oldest_open = dates.min().date()
 
     candidates = [d for d in (max_closed, oldest_open) if d is not None]
     if not candidates:
@@ -1656,7 +1671,7 @@ def print_today_summary(out_dir: Path):
             continue
         try:
             df = pd.read_csv(p)
-        except Exception:
+        except (OSError, ValueError):
             continue
         df["_d"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
         today_df = df[df["_d"] == today]

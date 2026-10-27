@@ -71,6 +71,7 @@ def test_hood_failure_is_fatal(tmp_path):
     assert proc.returncode == 3
     assert calls == ["hood.py"]          # nothing downstream runs on stale data
     assert "hood.py failed" not in proc.stdout  # alerts go to the log/webhook, not stdout
+    assert "❌ hood.py failed (exit 3)" in (tmp_path / "cron.log").read_text()
 
 
 def test_later_failures_are_non_fatal(tmp_path):

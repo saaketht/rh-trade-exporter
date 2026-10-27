@@ -25,6 +25,7 @@ if .venv/bin/python hood.py >> "$LOG" 2>&1; then
     echo "✅ hood.py success" >> "$LOG"
 else
     EXIT_CODE=$?
+    echo "❌ hood.py failed (exit $EXIT_CODE) — skipping the rest of the chain" >> "$LOG"
     TAIL=$(tail -20 "$LOG")
 
     # Discord webhook

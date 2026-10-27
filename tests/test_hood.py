@@ -40,6 +40,32 @@ class TestValidateToken:
 
 
 # ──────────────────────────────────────────────
+# ACCOUNT CACHE
+# ──────────────────────────────────────────────
+class TestAccountCache:
+    def test_loads_cached_numbers(self, tmp_path, monkeypatch):
+        f = tmp_path / "accts.json"
+        f.write_text('{"account_numbers": ["111", "222"]}')
+        monkeypatch.setattr(hood, "ACCT_CACHE_FILE", f)
+        assert hood.load_cached_accounts() == ["111", "222"]
+
+    def test_missing_cache_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hood, "ACCT_CACHE_FILE", tmp_path / "nope.json")
+        assert hood.load_cached_accounts() == []
+
+    @pytest.mark.parametrize("content", ["{not json", '["111"]'])
+    def test_corrupt_cache_exits_without_overwriting(self, tmp_path, monkeypatch, content):
+        # Falling back to /accounts/ would drop the cash sub-account and
+        # overwrite the cache, so a corrupt cache must stop the run.
+        f = tmp_path / "accts.json"
+        f.write_text(content)
+        monkeypatch.setattr(hood, "ACCT_CACHE_FILE", f)
+        with pytest.raises(SystemExit):
+            hood.discover_account_numbers(headers={})
+        assert f.read_text() == content
+
+
+# ──────────────────────────────────────────────
 # ORDER CLASSIFICATION
 # ──────────────────────────────────────────────
 class TestClassifyOrders:
@@ -428,6 +454,23 @@ class TestIncrementalCursor:
         (tmp_path / "unmatched_opens.csv").write_text("Date\n3/01/2026\n")
         # min(3/15, 3/1) - 1 = 2/28
         assert hood.determine_incremental_cursor(tmp_path) == "2026-02-28"
+
+    @pytest.mark.parametrize("opens", [
+        "",                          # empty file (EmptyDataError)
+        "Strike\n700\n",             # no Date column
+        "Date\n3/01/2026\ngarbage\n",  # a row whose date won't parse
+    ], ids=["empty", "no-date-column", "unparseable-date"])
+    def test_unreadable_unmatched_opens_forces_full_fetch(self, tmp_path, opens):
+        # A partial window would miss older opens and main() would then rewrite
+        # unmatched_opens.csv without them — so fall back to fetching everything.
+        (tmp_path / "spy_trades.csv").write_text("Date\n3/10/2026\n3/15/2026\n")
+        (tmp_path / "unmatched_opens.csv").write_text(opens)
+        assert hood.determine_incremental_cursor(tmp_path) is None
+
+    def test_header_only_unmatched_opens_is_fine(self, tmp_path):
+        (tmp_path / "spy_trades.csv").write_text("Date\n3/10/2026\n3/15/2026\n")
+        (tmp_path / "unmatched_opens.csv").write_text("Date\n")
+        assert hood.determine_incremental_cursor(tmp_path) == "2026-03-14"
 
 
 # ──────────────────────────────────────────────
