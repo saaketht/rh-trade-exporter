@@ -1264,11 +1264,14 @@ def build_trade_df(rows: list[dict], market: dict,
             "Exit Time": fmt_time(r["exit_dt"], time_format),
             "Hold Time (min)": r["hold_min"],
             "Entry Hour": entry_et.hour if entry_et else None,
-            "Entry Cost": int(-r["entry_cost"]),
-            "Risk ($)": int(r["entry_cost"]),
-            "Exit Credit": int(r["exit_credit"]),
-            "P/L ($)": int(r["pl"]),
-            "Cumulative P/L ($)": int(cumulative_pl),
+            # Cents, rounded — not int(): a close order filled at several prices and
+            # FIFO-split across lots gives fractional dollars, and int() truncated them
+            # toward zero (a −$0.14 loss stored as $0 while Win/Loss said LOSS).
+            "Entry Cost": round(-r["entry_cost"], 2),
+            "Risk ($)": round(r["entry_cost"], 2),
+            "Exit Credit": round(r["exit_credit"], 2),
+            "P/L ($)": round(r["pl"], 2),
+            "Cumulative P/L ($)": round(cumulative_pl, 2),
             "P/L (%)": round(r["pl_pct"], 6),
             "Win/Loss": "WIN" if r["pl"] > 0 else ("LOSS" if r["pl"] < 0 else "BE"),
             "Is Win": 1 if r["pl"] > 0 else 0,
@@ -1480,7 +1483,7 @@ def finalize_trade_df(merged: pd.DataFrame) -> pd.DataFrame:
     merged["Trade #"] = range(1, len(merged) + 1)
     # Recompute cumulative P/L from P/L ($).
     if "P/L ($)" in merged.columns:
-        merged["Cumulative P/L ($)"] = merged["P/L ($)"].cumsum().astype(int)
+        merged["Cumulative P/L ($)"] = merged["P/L ($)"].cumsum().round(2)
     return merged
 
 

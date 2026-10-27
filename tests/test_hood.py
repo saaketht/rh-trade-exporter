@@ -650,6 +650,15 @@ class TestBuildTradeDf:
         assert df.iloc[0]["Net P/L ($)"] == 199.84
         assert list(df.columns)[-2:] == ["Fees ($)", "Net P/L ($)"]   # appended, nothing shifts
 
+    def test_fractional_dollars_kept_not_truncated(self):
+        # An aggregated close split across lots: −$0.14 used to be stored as $0 (int()
+        # truncates toward zero) while Win/Loss said LOSS.
+        rows = self._make_paired_rows()
+        rows[0].update(entry_cost=78.14, exit_credit=78.0, pl=-0.14)
+        r = hood.build_trade_df(rows, {}).iloc[0]
+        assert (r["Entry Cost"], r["Exit Credit"], r["P/L ($)"]) == (-78.14, 78.0, -0.14)
+        assert r["Win/Loss"] == "LOSS" and r["P/L ($)"] < 0
+
     def test_fee_columns_blank_without_fee_data(self):
         df = hood.build_trade_df(self._make_paired_rows(), {})
         assert pd.isna(df.iloc[0]["Fees ($)"]) and pd.isna(df.iloc[0]["Net P/L ($)"])
