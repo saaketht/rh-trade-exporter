@@ -500,6 +500,64 @@ def aggregate_executions_by_order(executions: list[dict]) -> list[dict]:
 # ──────────────────────────────────────────────
 # PAIR OPENS → CLOSES
 # ──────────────────────────────────────────────
+def make_group_id(entry_dt: datetime, strike, option_type: str) -> str:
+    """Stable natural key: YYYY-MM-DD-HHMMSS-{strike}{C|P} (ET entry time).
+    Derived from trade data so re-runs produce identical IDs."""
+    otype = (option_type or "").lower()
+    tchar = "C" if otype.startswith("c") else "P" if otype.startswith("p") else "?"
+    et = (entry_dt.replace(tzinfo=timezone.utc) if entry_dt.tzinfo is None else entry_dt).astimezone(ET)
+    try:
+        strike_str = f"{float(strike):g}"
+    except (TypeError, ValueError):
+        strike_str = str(strike)
+    return f"{et.strftime('%Y-%m-%d-%H%M%S')}-{strike_str}{tchar}"
+
+
+def expiry_suffix(expiry: str) -> str:
+    """'2024-01-05' or '1/5/2024' → '-20240105' (collision suffix, see assign_group_ids)."""
+    return "-" + pd.to_datetime(expiry).strftime("%Y%m%d")
+
+
+def assign_group_ids(by_contract: dict) -> None:
+    """Set ex["group_id"] on every open lot before pairing.
+
+    The base is make_group_id(), which has no expiry, symbol, or order in it, so:
+    - Different contracts sharing a base (a calendar spread: same strike/type/second,
+      different expiries): the nearest expiry keeps the plain ID — existing 0DTE IDs
+      never change — and the others get expiry_suffix() (or "-{symbol}" if the expiry
+      is the same).
+    - Two orders on one contract in the same second: "-2", "-3"… in order_id order.
+    - No timestamp: "ORD-{order_id}", stable across runs (the old "G{n}" counter
+      wasn't, so re-runs duplicated those rows).
+    """
+    by_base = defaultdict(list)
+    for groups in by_contract.values():
+        for ex in groups["opens"]:
+            if ex.get("dt"):
+                by_base[make_group_id(ex["dt"], ex.get("strike_price"), ex.get("option_type"))].append(ex)
+            else:
+                ex["group_id"] = f"ORD-{ex.get('order_id', '')}"
+                print(f"  ⚠ Open lot with no timestamp → Group ID {ex['group_id']}")
+
+    for base, lots in by_base.items():
+        # (expiry, symbol) first so fix_group_ids.py, which only has CSV columns,
+        # resolves an existing collision the same way.
+        lots.sort(key=lambda e: (e.get("expiration_date") or "9999-12-31", e.get("chain_symbol", ""),
+                                 e.get("option_url", ""), str(e.get("order_id", ""))))
+        first = lots[0]
+        seen_per_contract = defaultdict(int)
+        for ex in lots:
+            gid = base
+            if ex.get("option_url") != first.get("option_url"):
+                exp = ex.get("expiration_date") or ""
+                gid += (expiry_suffix(exp) if exp and exp != first.get("expiration_date")
+                        else f"-{ex.get('chain_symbol', '')}")
+            seen_per_contract[ex.get("option_url")] += 1
+            if seen_per_contract[ex.get("option_url")] > 1:
+                gid += f"-{seen_per_contract[ex.get('option_url')]}"
+            ex["group_id"] = gid
+
+
 def pair_into_trade_rows(executions: list[dict]) -> tuple[list[dict], list[dict]]:
     """
     FIFO pair opens to closes. Each close = one output row.
@@ -513,9 +571,10 @@ def pair_into_trade_rows(executions: list[dict]) -> tuple[list[dict], list[dict]
         elif ex["position_effect"] == "close":
             by_contract[key]["closes"].append(dict(ex))
 
+    assign_group_ids(by_contract)
+
     rows = []
     unmatched_open_records = []
-    group_counter = 0
     unmatched_close_count = 0
 
     for contract_url, groups in sorted(
@@ -532,23 +591,7 @@ def pair_into_trade_rows(executions: list[dict]) -> tuple[list[dict], list[dict]
             if entry_qty_remaining <= 0:
                 continue
 
-            group_counter += 1
-            # Stable natural key: YYYY-MM-DD-HHMMSS-{strike}{C|P}
-            # Derived from trade data so re-runs produce identical IDs.
-            _edt = entry.get("dt")
-            _strike = entry.get("strike_price")
-            _otype = (entry.get("option_type") or "").lower()
-            _tchar = "C" if _otype.startswith("c") else "P" if _otype.startswith("p") else "?"
-            if _edt and _strike is not None:
-                _et = _edt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/New_York")) \
-                      if _edt.tzinfo is None else _edt.astimezone(ZoneInfo("America/New_York"))
-                try:
-                    _strike_str = f"{float(_strike):g}"
-                except (TypeError, ValueError):
-                    _strike_str = str(_strike)
-                group_id = f"{_et.strftime('%Y-%m-%d-%H%M%S')}-{_strike_str}{_tchar}"
-            else:
-                group_id = f"G{group_counter}"  # fallback if data missing
+            group_id = entry["group_id"]
             entry_price = entry["price_per_share"]
             matched_any = False
 
@@ -1407,6 +1450,11 @@ def merge_trade_csv(existing_path: Path, new_df: pd.DataFrame) -> pd.DataFrame:
             old_df = old_df[mask]
         merged = pd.concat([old_df, new_df], ignore_index=True)
 
+    return finalize_trade_df(merged)
+
+
+def finalize_trade_df(merged: pd.DataFrame) -> pd.DataFrame:
+    """Sort by Date + Entry Time, renumber `Trade #`, recompute `Cumulative P/L ($)`."""
     if len(merged) == 0:
         return merged
 

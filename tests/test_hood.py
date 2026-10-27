@@ -313,6 +313,64 @@ class TestFragmentationRegression:
 # ──────────────────────────────────────────────
 # VWAP / EMA
 # ──────────────────────────────────────────────
+class TestGroupIds:
+    URL_A = "https://api.robinhood.com/options/instruments/AAA/"
+    URL_B = "https://api.robinhood.com/options/instruments/BBB/"
+
+    def _ids(self, execs):
+        rows, unmatched = hood.pair_into_trade_rows(execs)
+        return [r["group_id"] for r in rows], [u["group_id"] for u in unmatched]
+
+    def test_make_group_id_format(self):
+        # 14:00 UTC on 3/20 = 10:00 ET (EDT); strike formatted with :g
+        dt = datetime(2026, 3, 20, 14, 0, 5, tzinfo=timezone.utc)
+        assert hood.make_group_id(dt, 580.0, "call") == "2026-03-20-100005-580C"
+        assert hood.make_group_id(dt, 13.5, "Put") == "2026-03-20-100005-13.5P"
+
+    def test_plain_id_unchanged(self):
+        ids, _ = self._ids([_make_exec("open", "buy", 1, 2.0),
+                            _make_exec("close", "sell", 1, 3.0, ts_offset_min=5)])
+        assert ids == ["2026-03-20-100000-580C"]
+
+    def test_calendar_spread_nearest_expiry_keeps_plain_id(self):
+        # Same strike/type/second, two expiries: the later leg gets -YYYYMMDD.
+        # Input order is reversed on purpose — assignment must not depend on it.
+        execs = [
+            _make_exec("open", "buy", 1, 2.0, option_url=self.URL_B, expiry="2026-04-17", order_id="o1"),
+            _make_exec("open", "buy", 1, 1.0, option_url=self.URL_A, expiry="2026-03-27", order_id="o1"),
+            _make_exec("close", "sell", 1, 2.5, ts_offset_min=5, option_url=self.URL_B, expiry="2026-04-17", order_id="o2"),
+            _make_exec("close", "sell", 1, 1.5, ts_offset_min=5, option_url=self.URL_A, expiry="2026-03-27", order_id="o2"),
+        ]
+        ids, _ = self._ids(execs)
+        assert sorted(ids) == ["2026-03-20-100000-580C", "2026-03-20-100000-580C-20260417"]
+
+    def test_same_expiry_different_symbol_gets_symbol_suffix(self):
+        execs = [
+            _make_exec("open", "buy", 1, 2.0, option_url=self.URL_A, chain_symbol="SPY"),
+            _make_exec("open", "buy", 1, 2.0, option_url=self.URL_B, chain_symbol="QQQ"),
+        ]
+        _, unmatched = self._ids(execs)
+        assert sorted(unmatched) == ["2026-03-20-100000-580C", "2026-03-20-100000-580C-SPY"]
+
+    def test_two_orders_same_contract_same_second(self):
+        execs = [
+            _make_exec("open", "buy", 1, 2.0, order_id="o_b"),
+            _make_exec("open", "buy", 1, 2.1, order_id="o_a"),
+            _make_exec("close", "sell", 2, 3.0, ts_offset_min=5, order_id="o_c"),
+        ]
+        ids, _ = self._ids(hood.aggregate_executions_by_order(execs))
+        assert sorted(ids) == ["2026-03-20-100000-580C", "2026-03-20-100000-580C-2"]
+
+    def test_missing_timestamp_uses_order_id_not_counter(self):
+        ex = _make_exec("open", "buy", 1, 2.0, order_id="abc-123")
+        ex["dt"] = None
+        _, unmatched = self._ids([ex])
+        assert unmatched == ["ORD-abc-123"]
+
+    def test_expiry_suffix_accepts_csv_and_iso_dates(self):
+        assert hood.expiry_suffix("2024-01-05") == hood.expiry_suffix("1/5/2024") == "-20240105"
+
+
 def _make_bars(n=10, date="2026-03-20"):
     """Generate n 5-min bars starting at 9:30 ET (13:30 UTC)."""
     bars = []
