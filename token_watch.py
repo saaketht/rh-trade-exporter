@@ -252,10 +252,15 @@ def main(argv=None) -> int:
         sent = notify(subj, body, env_value("DISCORD_WEBHOOK_URL"), env_value("ALERT_EMAIL"))
     if not a.dry_run:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        # Only a delivered alert resets the repeat clock; an undelivered one retries next run.
+        # An alert that reached no channel must not be marked handled: keep the previous
+        # status + fingerprint so the next run decides the same transition again. Without
+        # this, a manual run from an SSH shell (no DISCORD_WEBHOOK_URL there — it lives in
+        # the crontab) consumed one-shot "recovered"/"expiring" alerts without sending them.
+        undelivered = bool(kind) and not sent
+        base = (prev or {}) if undelivered else {"status": cur["status"], "fingerprint": fp}
         last = now if (kind and sent) else (prev or {}).get("last_alert_at")
-        STATE_FILE.write_text(json.dumps({"status": cur["status"], "fingerprint": fp, "exp": cur["exp"],
-                                          "checked_at": now, "last_alert_at": last}))
+        STATE_FILE.write_text(json.dumps({"status": base.get("status"), "fingerprint": base.get("fingerprint"),
+                                          "exp": cur["exp"], "checked_at": now, "last_alert_at": last}))
         STATUS_FILE.write_text(line + "\n")
 
     if a.json:

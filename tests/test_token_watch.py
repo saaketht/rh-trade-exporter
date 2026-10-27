@@ -198,6 +198,36 @@ class TestMain:
         assert (paths / "outputs" / ".token_status").read_text().startswith("🔴 RH token REJECTED")
         assert json.loads((paths / "outputs" / ".token_watch.json").read_text())["status"] == "rejected"
 
+    def test_undelivered_recovery_is_retried(self, paths, monkeypatch):
+        # gener, Oct 27: token replaced, then a manual run from an SSH shell (no webhook
+        # there) saw rejected → ok, sent nothing, and saved "ok" — cron never sent it.
+        (paths / ".rh_token").write_text(jwt(int(9e9)))
+        monkeypatch.setattr(tw, "probe", lambda t: ("rejected", 401))
+        monkeypatch.setattr(tw, "notify", lambda s, b, w, e: ["discord"] if w else [])
+        (paths / ".env").write_text("DISCORD_WEBHOOK_URL=https://hook\n")
+        tw.main([])                                       # cron: rejected alert delivered
+        (paths / ".rh_token").write_text(jwt(int(9e9) + 1))   # new token
+        monkeypatch.setattr(tw, "probe", lambda t: ("ok", 200))
+        (paths / ".env").write_text("")
+        tw.main([])                                       # manual run: no channel
+        sent = []
+        monkeypatch.setattr(tw, "notify", lambda s, b, w, e: sent.append(s) or ["discord"])
+        (paths / ".env").write_text("DISCORD_WEBHOOK_URL=https://hook\n")
+        tw.main([])                                       # next cron run
+        tw.main([])
+        assert sent == ["RH token OK again"]              # delivered once, then quiet
+
+    def test_undelivered_expiring_warning_is_retried(self, paths, monkeypatch):
+        (paths / ".rh_token").write_text(jwt(int(tw.datetime.now().timestamp()) + 3 * 3600))
+        monkeypatch.setattr(tw, "probe", lambda t: ("ok", 200))
+        monkeypatch.setattr(tw, "notify", lambda s, b, w, e: [])
+        tw.main([])                                       # nowhere to send
+        sent = []
+        monkeypatch.setattr(tw, "notify", lambda s, b, w, e: sent.append(s) or ["discord"])
+        tw.main([])
+        tw.main([])
+        assert sent == ["RH token expiring soon"]
+
     def test_dry_run_writes_nothing(self, paths, monkeypatch):
         monkeypatch.setattr(tw, "probe", lambda t: ("rejected", 401))
         tw.main(["--dry-run"])
