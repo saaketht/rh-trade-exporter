@@ -617,7 +617,9 @@
   const addMonth = (dateStr) => {
     if (!dateStr) return;
     const [yr, mo] = dateStr.split('-');
-    if (yr && mo) monthSet.add(parseInt(yr, 10) + '-' + parseInt(mo, 10));
+    // Zero-pad the month so the plain string sort below is chronological
+    // ("2026-10" must sort after "2026-09", not between "2026-1" and "2026-2").
+    if (yr && mo) monthSet.add(parseInt(yr, 10) + '-' + String(parseInt(mo, 10)).padStart(2, '0'));
   };
   days.forEach(d => addMonth(d.date));
   cashFlowEvents.forEach(e => {
@@ -823,13 +825,25 @@
   if (window.__calArrowNavListener) {
     document.removeEventListener('keydown', window.__calArrowNavListener);
   }
+  // Modal open → ←/→ step through active days. Modal closed → ←/→ step through months.
   window.__calArrowNavListener = (e) => {
-    if (!modalBg.classList.contains('open')) return;
-    if (!currentModalDate) return;
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;   // leave browser shortcuts alone
+    if (!document.getElementById('calendar')) return;               // Calendar view not mounted
     const a = document.activeElement;
     if (a && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable)) return;
-    if (e.key === 'ArrowLeft')  { e.preventDefault(); navigateToDate(prevActiveDate(currentModalDate)); }
-    if (e.key === 'ArrowRight') { e.preventDefault(); navigateToDate(nextActiveDate(currentModalDate)); }
+    const back = e.key === 'ArrowLeft';
+    if (modalBg.classList.contains('open')) {
+      if (!currentModalDate) return;
+      e.preventDefault();
+      navigateToDate(back ? prevActiveDate(currentModalDate) : nextActiveDate(currentModalDate));
+      return;
+    }
+    const next = currentMonthIdx + (back ? -1 : 1);
+    if (next < 0 || next >= monthsWithTrades.length) return;
+    e.preventDefault();
+    currentMonthIdx = next;
+    renderMonth();
   };
   document.addEventListener('keydown', window.__calArrowNavListener);
 
