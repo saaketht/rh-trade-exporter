@@ -150,6 +150,48 @@ class TestAuth:
 # API: /api/trades
 # ──────────────────────────────────────────────
 
+class TestBasis:
+    """basis=net (default) swaps in net-of-fees P/L and recomputes what depends on it."""
+    HDR = ["Date", "Entry Time", "Hold Time (min)", "Symbol", "Risk ($)", "P/L ($)", "P/L (%)",
+           "Win/Loss", "Is Win", "Cumulative P/L ($)", "Fees ($)", "Net P/L ($)", "Group ID"]
+
+    def _rows(self, tmp_outputs):
+        write_csv(tmp_outputs / "spy_trades.csv", self.HDR, [
+            # gross +0.05 win that fees turn into a loss
+            {"Date": "4/23/2026", "Entry Time": "09:30:00", "Hold Time (min)": "5", "Symbol": "SPY",
+             "Risk ($)": "100", "P/L ($)": "0.05", "P/L (%)": "0.05", "Win/Loss": "WIN", "Is Win": "1",
+             "Cumulative P/L ($)": "0.05", "Fees ($)": "0.08", "Net P/L ($)": "-0.03", "Group ID": "a"},
+            # old row without fee data keeps its gross P/L
+            {"Date": "4/23/2026", "Entry Time": "10:00:00", "Hold Time (min)": "5", "Symbol": "SPY",
+             "Risk ($)": "200", "P/L ($)": "50", "P/L (%)": "25", "Win/Loss": "WIN", "Is Win": "1",
+             "Cumulative P/L ($)": "50.05", "Fees ($)": "", "Net P/L ($)": "", "Group ID": "b"},
+        ])
+
+    def test_net_is_default(self, client, tmp_outputs):
+        self._rows(tmp_outputs)
+        a, b = client.get("/api/trades").json()
+        assert (a["pl"], a["pl_gross"], a["wl"], a["is_win"], a["pl_pct"]) == (-0.03, 0.05, "LOSS", 0, -0.03)
+        assert (b["pl"], b["wl"]) == (50.0, "WIN")
+        assert b["cumulative_pl"] == 49.97
+
+    def test_gross_returns_csv_values(self, client, tmp_outputs):
+        self._rows(tmp_outputs)
+        a, _ = client.get("/api/trades?basis=gross").json()
+        assert (a["pl"], a["wl"], a["fees"]) == (0.05, "WIN", 0.08)
+        assert "pl_gross" not in a
+
+    def test_daily_and_summary_follow_basis(self, client, tmp_outputs):
+        self._rows(tmp_outputs)
+        assert client.get("/api/trades/daily").json()[0]["pl"] == 49.97
+        assert client.get("/api/trades/daily?basis=gross").json()[0]["pl"] == 50.05
+        s = client.get("/api/summary").json()
+        assert s["total_pl"] == 49.97 and s["win_rate"] == 50.0
+
+    def test_bad_basis_is_400(self, client, tmp_outputs):
+        self._rows(tmp_outputs)
+        assert client.get("/api/trades?basis=sideways").status_code == 400
+
+
 class TestGetTrades:
     def test_empty_when_no_csvs(self, client, tmp_outputs):
         r = client.get("/api/trades")

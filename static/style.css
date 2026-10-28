@@ -9,6 +9,10 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:
 .nav-tab{padding:8px 16px;font-size:13px;color:#888;cursor:pointer;border-radius:8px;text-decoration:none;transition:all .15s;user-select:none}
 .nav-tab:hover{color:#ccc;background:#1a1d27}
 .nav-tab.active{color:#fff;background:#262938}
+.basis-toggle{display:flex;background:#1a1d27;border:1px solid #2a2d3a;border-radius:8px;padding:2px}
+.basis-toggle button{background:none;border:0;color:#888;font-size:12px;padding:5px 10px;border-radius:6px;cursor:pointer}
+.basis-toggle button:hover{color:#ccc}
+.basis-toggle button.active{color:#fff;background:#262938}
 
 /* === App Container === */
 .app-container{padding:24px;max-width:1200px;margin:0 auto}

@@ -940,11 +940,15 @@
   function frictionEstimate(totalContracts) {
     return Math.round(totalContracts * FRICTION_PER_CONTRACT_RT);
   }
-  // Robinhood contract fees: ~$0.04 per contract per side (ORF + clearing).
-  // Exact, deterministic — not an estimate like friction.
+  // Robinhood fees come from the CSV's Fees ($) column (regulatory + contract fees on
+  // each row's open and close). Days with rows from before fees were captured fall back
+  // to the flat ~$0.04 per contract per side.
   const FEE_PER_CONTRACT_SIDE = 0.04;
-  function feeExact(totalContracts) {
-    return +(totalContracts * FEE_PER_CONTRACT_SIDE * 2).toFixed(2);
+  function dayFees(trades, totalContracts) {
+    if (trades.length && trades.every(t => t.fees != null)) {
+      return { amount: +trades.reduce((s, t) => s + t.fees, 0).toFixed(2), actual: true };
+    }
+    return { amount: +(totalContracts * FEE_PER_CONTRACT_SIDE * 2).toFixed(2), actual: false };
   }
 
   // ---------- Leg detection ----------
@@ -1388,7 +1392,7 @@
     const totalAddsUp = legs.reduce((s, l) => s + l.addsUp, 0);
     const totalAddsFlat = legs.reduce((s, l) => s + (l.addsFlat || 0), 0);
     const friction = frictionEstimate(totalQty);
-    const fees = feeExact(totalQty);
+    const fees = dayFees(dayTrades, totalQty);
 
     // ---------- View renderers ----------
     function renderLegsView() {
@@ -1938,9 +1942,10 @@
 Formula: ~$${FRICTION_PER_CONTRACT_RT}/contract round trip × ${totalQty} contracts.
 Assumes ~$0.03 spread on 0DTE SPY ATM options, paid on entry + exit.
 Real spread isn't in your CSVs (RH doesn't report execution-time bid/ask), so this is a flat estimate."><span class="meta-label">Friction est.</span><span class="friction-est">~$${friction.toLocaleString()} cost</span></span>
-          <span data-tip="<strong>Fees</strong> — Robinhood options contract fees (ORF + clearing).
-Formula: $${FEE_PER_CONTRACT_SIDE}/contract/side × ${totalQty} contracts × 2 sides = $${fees}.
-Exact — deterministic from contract count, not estimated."><span class="meta-label">Fees</span><span class="friction-est">$${fees.toFixed(2)}</span></span>
+          <span data-tip="<strong>Fees</strong> — Robinhood regulatory + contract fees.
+${fees.actual
+  ? `Actual: the sum of the Fees ($) column for today's ${dayTrades.length} rows, as Robinhood charged them. ${window.plBasis && window.plBasis() === 'gross' ? 'P/L here is gross (before fees).' : 'P/L here is already net of these.'}`
+  : `Estimate: $${FEE_PER_CONTRACT_SIDE}/contract/side × ${totalQty} contracts × 2 sides. Some of today's rows predate fee capture.`}"><span class="meta-label">Fees${fees.actual ? '' : ' est.'}</span><span class="friction-est">$${fees.amount.toFixed(2)}</span></span>
           <span data-tip="<strong>Adds</strong> — events where you increased an existing position (didn't go flat first).
 🔻 avg-down: added at a lower price than your existing basis (doubling down on a losing thesis)
 🔺 avg-up:   added at a higher price (scaling into a working thesis)

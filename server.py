@@ -210,12 +210,45 @@ def _write_notes(notes: dict):
     NOTES_FILE.parent.mkdir(parents=True, exist_ok=True)
     NOTES_FILE.write_text(json.dumps(notes, indent=2))
 
+def _read_trades(filename: str, basis: str = "net") -> list[dict]:
+    """Trade rows with P/L on the requested basis.
+
+    basis="net": `pl` becomes `net_pl` (gross minus RH fees) and the fields derived
+    from it — `wl`, `is_win`, `pl_pct`, `cumulative_pl` — are recomputed, so every view
+    reads one consistent number. The gross value stays available as `pl_gross`.
+    Rows without fee data (written before fees were captured) keep their gross P/L.
+    basis="gross" returns the CSV as-is.
+    """
+    rows = _read_csv(filename)
+    if basis != "net":
+        return rows
+    cum = 0.0
+    for r in rows:
+        r["pl_gross"] = r.get("pl")
+        if r.get("net_pl") is not None:
+            pl = r["net_pl"]
+            r["pl"] = pl
+            r["wl"] = "WIN" if pl > 0 else ("LOSS" if pl < 0 else "BE")
+            r["is_win"] = 1 if pl > 0 else 0
+            if r.get("risk"):
+                r["pl_pct"] = round(pl / r["risk"] * 100, 2)
+        cum += r.get("pl") or 0
+        r["cumulative_pl"] = round(cum, 2)
+    return rows
+
+
+def _basis(value: str) -> str:
+    if value not in ("net", "gross"):
+        raise HTTPException(status_code=400, detail="basis must be 'net' or 'gross'")
+    return value
+
 # --- API endpoints ---
 
 @app.get("/api/trades")
-def get_trades(symbol: Optional[str] = None, _=Depends(verify_token)):
-    spy = _read_csv("spy_trades.csv")
-    other = _read_csv("other_trades.csv")
+def get_trades(symbol: Optional[str] = None, basis: str = "net", _=Depends(verify_token)):
+    basis = _basis(basis)
+    spy = _read_trades("spy_trades.csv", basis)
+    other = _read_trades("other_trades.csv", basis)
     all_trades = spy + other
     if symbol:
         sym = symbol.upper()
@@ -223,14 +256,14 @@ def get_trades(symbol: Optional[str] = None, _=Depends(verify_token)):
     return all_trades
 
 @app.get("/api/trades/daily")
-def get_daily(_=Depends(verify_token)):
+def get_daily(basis: str = "net", _=Depends(verify_token)):
     """Daily aggregates bucketed by EXIT date (close-date attribution).
 
     For 0DTE this is identical to entry-date bucketing (same date). For 1DTE+ trades
     held overnight, P/L is attributed to the day the position was closed — which matches
     when the loss/gain is actually realized.
     """
-    trades = _read_csv("spy_trades.csv")
+    trades = _read_trades("spy_trades.csv", _basis(basis))
     daily: dict[str, dict] = {}
     for t in trades:
         d = t.get("exit_date") or t["date"]
@@ -409,9 +442,9 @@ def compute_pl_split(rows: list[dict]) -> dict:
 
 
 @app.get("/api/trades/split")
-def get_trades_split(_=Depends(verify_token)):
+def get_trades_split(basis: str = "net", _=Depends(verify_token)):
     """Three-group P/L split of SPY opening orders — see compute_pl_split."""
-    return compute_pl_split(_read_csv("spy_trades.csv"))
+    return compute_pl_split(_read_trades("spy_trades.csv", _basis(basis)))
 
 
 @app.get("/api/trades/open")
@@ -535,9 +568,10 @@ def get_cash_flow(_=Depends(verify_token)):
     return sorted(by_date.values(), key=lambda x: x.get("timestamp", ""))
 
 @app.get("/api/summary")
-def get_summary(_=Depends(verify_token)):
-    spy = _read_csv("spy_trades.csv")
-    other = _read_csv("other_trades.csv")
+def get_summary(basis: str = "net", _=Depends(verify_token)):
+    basis = _basis(basis)
+    spy = _read_trades("spy_trades.csv", basis)
+    other = _read_trades("other_trades.csv", basis)
     all_trades = spy + other
     if not all_trades:
         return {"total_trades": 0}

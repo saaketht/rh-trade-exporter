@@ -84,6 +84,8 @@
     { field: 'pl', headerName: 'P/L ($)',
       cellClass: p => p.value > 0 ? 'cell-win' : p.value < 0 ? 'cell-loss' : 'cell-be',
       valueFormatter: p => plStr(p.value) },
+    { field: 'fees', headerName: 'Fees',
+      valueFormatter: p => p.value != null ? '$' + p.value.toFixed(2) : '' },
     { field: 'pl_pct', headerName: 'P/L %',
       cellClass: p => p.value > 0 ? 'cell-win' : p.value < 0 ? 'cell-loss' : '',
       valueFormatter: p => p.value != null ? p.value.toFixed(1) + '%' : '' },

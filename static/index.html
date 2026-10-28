@@ -24,6 +24,11 @@
     <a class="nav-tab" data-view="portfolio">Portfolio</a>
     <a class="nav-tab" data-view="admin">Admin</a>
   </div>
+  <div class="basis-toggle" role="group" aria-label="P/L basis"
+       title="Net = after Robinhood's regulatory + contract fees. Gross = premium in vs out.">
+    <button type="button" data-basis="net">Net</button>
+    <button type="button" data-basis="gross">Gross</button>
+  </div>
 </nav>
 
 <div id="lockout-banner" class="lockout-banner" hidden></div>
@@ -35,7 +40,16 @@
 const params = new URLSearchParams(window.location.search);
 const TOKEN = params.get('token') || '';
 
+// P/L basis for every trade endpoint: "net" (after fees, the default) or "gross".
+// The server swaps the numbers, so views never need to know which one they got.
+let PL_BASIS = 'net';
+try { PL_BASIS = localStorage.getItem('plBasis') === 'gross' ? 'gross' : 'net'; } catch (e) {}
+window.plBasis = () => PL_BASIS;
+
 function apiFetch(url, opts = {}) {
+  if (/^\/api\/(trades|summary)/.test(url)) {
+    url += (url.includes('?') ? '&' : '?') + 'basis=' + PL_BASIS;
+  }
   const headers = opts.headers || {};
   if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
   return fetch(url, { ...opts, headers }).then(r => {
@@ -88,6 +102,24 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
 
 // Expose for cross-view navigation (e.g. calendar's Carried Positions → Positions tab)
 window.loadView = loadView;
+
+// Net / Gross toggle: remember the choice and re-render the current view with it.
+function paintBasis() {
+  document.querySelectorAll('.basis-toggle button').forEach(b =>
+    b.classList.toggle('active', b.dataset.basis === PL_BASIS));
+}
+document.querySelectorAll('.basis-toggle button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.basis === PL_BASIS) return;
+    PL_BASIS = btn.dataset.basis;
+    try { localStorage.setItem('plBasis', PL_BASIS); } catch (e) {}
+    paintBasis();
+    const view = currentView;
+    currentView = '';
+    loadView(view);
+  });
+});
+paintBasis();
 
 
 // --- 9am lockout banner ---------------------------------------------------

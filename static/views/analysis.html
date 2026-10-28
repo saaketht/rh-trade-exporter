@@ -238,7 +238,7 @@
 
   // ─── KPI grouping + combo + explainer metadata ──────────────
   const KPI_GROUPS = {
-    performance: ['total-pl', 'win-rate', 'profit-factor', 'expectancy', 'wl-ratio'],
+    performance: ['total-pl', 'fees', 'win-rate', 'profit-factor', 'expectancy', 'wl-ratio'],
     daily:       ['avg-daily', 'median-daily', 'best-day', 'worst-day', 'recovery'],
     streaks:     ['max-w-streak', 'max-l-streak', 'avg-win', 'avg-loss', 'current-streak', 'largest-wl'],
   };
@@ -343,7 +343,8 @@
     }
     allTrades = fetched.map(t => ({
       date: t.date, pl: t.pl || 0, type: t.type, day: t.day,
-      hour: t.entry_hour, vix: t.vix, qty: t.qty || 1, wl: t.wl, risk: t.risk || 0
+      hour: t.entry_hour, vix: t.vix, qty: t.qty || 1, wl: t.wl, risk: t.risk || 0,
+      fees: t.fees ?? null, pl_gross: t.pl_gross
     }));
     setupSpanRow();
     rerender();
@@ -462,10 +463,27 @@
     }
     const currentStreak = (_csDir && _csCount >= 2) ? { dir: _csDir, count: _csCount } : null;
 
+    // Fees (Robinhood regulatory + contract fees from the CSV). P/L above is net or gross
+    // per the nav toggle; pl_gross is only present on the net basis.
+    const withFees = T.filter(t => t.fees != null);
+    const totalFees = withFees.reduce((s, t) => s + t.fees, 0);
+    const feeContracts = withFees.reduce((s, t) => s + (t.qty || 0), 0);
+    const grossPL = T.reduce((s, t) => s + (t.pl_gross ?? t.pl), 0);
+    KPI_INFO['fees'] = {
+      title: 'Fees',
+      formula: 'Σ Robinhood regulatory + contract fees on the open and close of each trade',
+      blurb: `$${totalFees.toFixed(2)} on ${feeContracts.toLocaleString()} contracts`
+        + (feeContracts ? ` ($${(totalFees / feeContracts).toFixed(3)} per contract, round trip)` : '')
+        + (grossPL > 0 ? `, ${(totalFees / grossPL * 100).toFixed(1)}% of gross P/L.` : '.')
+        + ` Total P/L is shown ${window.plBasis && window.plBasis() === 'gross' ? '<strong>gross</strong> (before fees)' : '<strong>net</strong> (after fees)'} — switch with Net / Gross in the top bar.`
+        + (withFees.length < T.length ? ` ${T.length - withFees.length} older trades have no fee data and count as gross.` : ''),
+    };
+
     // KPIs — slug → [label, valueStr, colorClass]
     const plStr = v => v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString();
     const KV = {
       'total-pl':      ['Total P/L', plStr(totalPL), totalPL >= 0 ? 'pos' : 'neg'],
+      'fees':          ['Fees', '$' + totalFees.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}), 'neg'],
       'win-rate':      ['Win Rate', wr + '%', 'neu'],
       'profit-factor': ['Profit Factor', pf, parseFloat(pf) >= 1 ? 'pos' : 'neg'],
       'expectancy':    ['Expectancy', plStr(expectancy), expectancy >= 0 ? 'pos' : 'neg'],
