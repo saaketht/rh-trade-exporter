@@ -46,6 +46,14 @@ const factory = new Function(`
   ${renderBody}
   return { buildLegs, renderEvents, fmtPL };
 `);
+// fmtPL calls the shell's shared money formatter — slice that out of index.html too.
+const SHELL = readFileSync(join(__dirname, '..', 'static', 'index.html'), 'utf8');
+const fmtStart = SHELL.indexOf('window.fmtAbsMoney = v =>');
+const fmtEnd = SHELL.indexOf('maximumFractionDigits: 2 });', fmtStart);
+if (fmtStart === -1 || fmtEnd === -1) throw new Error('anchor not found: window.fmtAbsMoney in index.html');
+new Function(SHELL.slice(fmtStart, fmtEnd + 'maximumFractionDigits: 2 });'.length)
+  .replace('window.fmtAbsMoney', 'globalThis.fmtAbsMoney'))();
+
 const { buildLegs, renderEvents } = factory();
 
 // ---------- assertions ----------

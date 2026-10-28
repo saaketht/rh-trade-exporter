@@ -586,7 +586,7 @@
   document.getElementById('cal-sub').textContent =
     days.length + ' trading days \u00b7 ' + totalTrades + ' trades \u00b7 ' + firstDate + ' \u2013 ' + lastDate;
 
-  const plStr = v => v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString();
+  const plStr = v => v >= 0 ? '+$' + fmtAbsMoney(v) : '-$' + fmtAbsMoney(v);
 
   // --- Calendar (single browsable month) ---
   const lookup = {};
@@ -727,7 +727,7 @@
           ? `SPY: ${market.spy_pct >= 0 ? '+' : ''}${market.spy_pct.toFixed(2)}% (close $${(market.spy_close || 0).toFixed(2)})<br>` : '';
         html += `<div class="day-cell has-trades ${getClass(data.pl)}" data-date="${dateStr}">
           <div class="date">${d}</div>
-          <div class="pl ${plColor}">${data.pl >= 0 ? '+' : ''}${data.pl}</div>
+          <div class="pl ${plColor}">${data.pl >= 0 ? '+' : '-'}${fmtAbsMoney(data.pl)}</div>
           <div class="trades">${data.num_trades}t ${data.wins}w</div>
           ${ctx}
           ${flowIcons}
@@ -910,7 +910,7 @@
     const m = String(t).match(/(\d{1,2}):(\d{2})/);
     return m ? `${m[1].padStart(2,'0')}:${m[2]}` : t;
   };
-  const fmtPL = (v) => v == null ? '—' : (v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString());
+  const fmtPL = (v) => v == null ? '—' : (v >= 0 ? '+$' + fmtAbsMoney(v) : '-$' + fmtAbsMoney(v));
   const fmtPrice = (n) => n == null ? '—' : '$' + n.toFixed(2);
 
   // ---------- Helpers shared by all views ----------

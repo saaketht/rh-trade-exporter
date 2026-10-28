@@ -45,6 +45,10 @@ const TOKEN = params.get('token') || '';
 let PL_BASIS = 'net';
 try { PL_BASIS = localStorage.getItem('plBasis') === 'gross' ? 'gross' : 'net'; } catch (e) {}
 window.plBasis = () => PL_BASIS;
+// Money for display: cents when there are any, none when the amount is whole
+// ("$566.20", "$300"). Sums of cents carry float noise, so never print raw numbers.
+window.fmtAbsMoney = v => Math.abs(v).toLocaleString('en-US', {
+  minimumFractionDigits: Math.abs(Math.round(v * 100) % 100) ? 2 : 0, maximumFractionDigits: 2 });
 
 function apiFetch(url, opts = {}) {
   if (/^\/api\/(trades|summary)/.test(url)) {

@@ -151,7 +151,7 @@
   document.getElementById('habits-sub').textContent =
     days.length + ' trading days · ' + totalTrades + ' trades · ' + days[0].date + ' - ' + days[days.length - 1].date;
 
-  const plStr = v => v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString();
+  const plStr = v => v >= 0 ? '+$' + fmtAbsMoney(v) : '-$' + fmtAbsMoney(v);
 
   // --- Habit Insights (computed from trade-level data) ---
   const T = allTrades.map(t => ({

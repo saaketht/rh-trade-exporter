@@ -130,7 +130,7 @@
   });
 
   // Helpers
-  const plStr = v => v >= 0 ? '+$' + Math.abs(v).toLocaleString() : '-$' + Math.abs(v).toLocaleString();
+  const plStr = v => v >= 0 ? '+$' + fmtAbsMoney(v) : '-$' + fmtAbsMoney(v);
   const pct = (a, b) => b > 0 ? Math.round(a / b * 100) + '%' : '\u2014';
   const clr = v => v >= 0 ? 'g' : 'r';
   const range = d => d.o ? ((d.h - d.l) / d.o * 100).toFixed(1) : '?';

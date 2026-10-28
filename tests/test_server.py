@@ -187,6 +187,15 @@ class TestBasis:
         s = client.get("/api/summary").json()
         assert s["total_pl"] == 49.97 and s["win_rate"] == 50.0
 
+    def test_daily_sums_are_rounded_to_cents(self, client, tmp_outputs):
+        # 0.1 + 0.2 = 0.30000000000000004 — the calendar printed sums like this raw.
+        write_csv(tmp_outputs / "spy_trades.csv", ["Date", "Entry Time", "Hold Time (min)", "P/L ($)"], [
+            {"Date": "4/23/2026", "Entry Time": "09:30:00", "Hold Time (min)": "1", "P/L ($)": "0.1"},
+            {"Date": "4/23/2026", "Entry Time": "09:40:00", "Hold Time (min)": "1", "P/L ($)": "0.2"},
+        ])
+        (day,) = client.get("/api/trades/daily?basis=gross").json()
+        assert day["pl"] == 0.3 and day["cumulative_pl"] == 0.3
+
     def test_bad_basis_is_400(self, client, tmp_outputs):
         self._rows(tmp_outputs)
         assert client.get("/api/trades?basis=sideways").status_code == 400

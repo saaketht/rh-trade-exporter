@@ -281,6 +281,7 @@ def get_daily(basis: str = "net", _=Depends(verify_token)):
     sorted_days = sorted(daily.values(), key=lambda x: x["date"])
     cum = 0
     for day in sorted_days:
+        day["pl"] = round(day["pl"], 2)   # summed cents carry float noise (566.1999999999998)
         cum += day["pl"]
         day["cumulative_pl"] = round(cum, 2)
     return sorted_days
