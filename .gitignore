@@ -9,6 +9,8 @@ outputs/
 sandbox/
 __pycache__/
 
+.env
+*.log
 .DS_Store
 .rh_token
 .server_token
