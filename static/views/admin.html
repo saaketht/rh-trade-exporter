@@ -124,14 +124,23 @@
 <div class="adm-section">
   <h2>On-demand fetch</h2>
   <p class="subtitle" style="margin-bottom:14px;font-size:12px">
-    Cron runs hood + option_intraday + cash_flow + spy_daily + spy_intraday nightly at 4:05 PM ET on weekdays — these buttons are for "I traded today" or retry-after-failure.
-    Only one job at a time.
+    gener is the source of truth: its cron runs the Daily refresh chain at 4:05 PM ET on weekdays.
+    On this machine, <strong>Pull from gener</strong> is usually all you need; the rest are for retries
+    or when gener is down. Only one job at a time.
   </p>
   <div class="adm-runs" id="adm-runs">
+    <div class="adm-run-row adm-run-combined" data-script="pull_data">
+      <div class="adm-run-meta">
+        <span class="adm-run-name">Pull from gener</span>
+        <span class="adm-run-desc">Copy gener's outputs here (vps/pull_data.sh): one-way, cash-flow logs merged, replaced files kept in outputs/.prepull/.</span>
+      </div>
+      <span class="adm-run-status">idle</span>
+      <button class="adm-btn">Run</button>
+    </div>
     <div class="adm-run-row adm-run-combined" data-script="daily_refresh">
       <div class="adm-run-meta">
         <span class="adm-run-name">Daily refresh</span>
-        <span class="adm-run-desc">hood → cash_flow → spy_intraday → spy_daily → option_intraday (abort on first failure). Per-step status mirrors into the rows below.</span>
+        <span class="adm-run-desc">The same chain gener's cron runs (daily_refresh.py): hood → option_intraday → cash_flow → spy_daily → spy_intraday. Stops only if hood fails; later failures are marked and the rest still run. Per-step status mirrors into the rows below.</span>
       </div>
       <span class="adm-run-status">idle</span>
       <button class="adm-btn">Run</button>
@@ -331,7 +340,7 @@
   // For the daily_refresh combined run, track per-step state across polls so
   // markers that have scrolled off the 4KB log_tail don't downgrade us.
   // States: 'queued' → 'running' → 'done' | 'failed'.
-  const COMBINED_STEPS = ['hood', 'cash_flow', 'spy_intraday', 'spy_daily', 'option_intraday'];
+  const COMBINED_STEPS = ['hood', 'option_intraday', 'cash_flow', 'spy_daily', 'spy_intraday'];
   let stepStates = {};
 
   function setRowState(script, label, klass) {
@@ -380,6 +389,13 @@
     });
   }
 
+  // daily_refresh exits 3 when hood succeeded but a later step failed.
+  function finalLabel(script, ok, code) {
+    if (ok) return [`✓ done (${code})`, 'done'];
+    if (script === 'daily_refresh' && code === 3) return ['⚠ partial — see failed steps', 'failed'];
+    return [`✗ failed (${code})`, 'failed'];
+  }
+
   function parseStepMarkers(log) {
     // Parse all [STEP] lines in the visible log_tail. Forward-progress only:
     // queued → running → done/failed. END exit=0 = done, anything else = failed.
@@ -424,7 +440,7 @@
         return; // keep polling
       }
       const ok = j.state === 'done';
-      setRowState(script, ok ? `✓ done (${j.exit_code})` : `✗ failed (${j.exit_code})`, ok ? 'done' : 'failed');
+      setRowState(script, ...finalLabel(script, ok, j.exit_code));
       if (script === 'daily_refresh') {
         // Any step still showing 'queued' or 'running' after the parent exited
         // means it never ran (abort path) — show that explicitly.
@@ -523,8 +539,7 @@
       pollTimer = setInterval(() => pollJob(detail.id, script), 2000);
     } else {
       const ok = detail.state === 'done';
-      setRowState(script, ok ? `✓ done (${detail.exit_code})` : `✗ failed (${detail.exit_code})`,
-                  ok ? 'done' : 'failed');
+      setRowState(script, ...finalLabel(script, ok, detail.exit_code));
       // For daily_refresh, finalize child rows (skipped vs failed) the same
       // way pollJob would on exit.
       if (script === 'daily_refresh') {

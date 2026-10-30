@@ -41,9 +41,12 @@ ADMIN_SCRIPTS = {
     "spy_intraday_back": [sys.executable, str(BASE_DIR / "spy_intraday.py"), "--backfill"],
     "option_intraday":   [sys.executable, str(BASE_DIR / "option_intraday.py")],
     "token_watch":       [sys.executable, str(BASE_DIR / "token_watch.py")],
-    # Combined: runs hood → cash_flow → spy_intraday → spy_daily → option_intraday, abort-on-fail.
+    # Combined: the nightly chain (hood → option_intraday → cash_flow → spy_daily → spy_intraday;
+    # only hood is fatal). The same daily_refresh.py vps/run.sh runs.
     # Emits [STEP] markers so the UI can mirror per-step status to child rows.
     "daily_refresh":     [sys.executable, "-u", str(BASE_DIR / "daily_refresh.py")],
+    # One-way copy of gener's outputs to this machine (gener is the source of truth).
+    "pull_data":         ["bash", str(BASE_DIR / "vps" / "pull_data.sh")],
 }
 
 # In-memory job table. Single-worker uvicorn assumed.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Cron wrapper — runs hood.py and sends alerts on failure.
+# Cron wrapper — runs the nightly chain (daily_refresh.py), alerts if hood fails,
+# then runs health_check.py, which posts to Discord only when something is off.
 # Usage: crontab -e → 5 16 * * 1-5 /path/to/rh-trade-exporter/vps/run.sh
 
 set -euo pipefail
@@ -18,19 +19,23 @@ EMAIL="${ALERT_EMAIL:-$(env_file_value ALERT_EMAIL)}"
 
 echo "===== $(date '+%Y-%m-%d %H:%M:%S') =====" >> "$LOG"
 
-# Run the export. No --after-date / --symbol: hood.py derives its cursor from the
-# existing CSVs, so a day a failed run missed (e.g. dead token) is refetched on the
-# next success, and non-SPY trades + unmatched opens stay current too.
-if .venv/bin/python hood.py >> "$LOG" 2>&1; then
-    echo "✅ hood.py success" >> "$LOG"
-else
-    EXIT_CODE=$?
-    echo "❌ hood.py failed (exit $EXIT_CODE) — skipping the rest of the chain" >> "$LOG"
+# The chain itself lives in daily_refresh.py (shared with the admin panel's
+# "Daily refresh" button): hood → option_intraday → cash_flow → spy_daily →
+# spy_intraday. hood runs bare, so its incremental cursor refetches any day a
+# failed run missed. Exit 0 = all ok, 3 = hood ok but a later step failed,
+# anything else = hood failed (fatal).
+set +e
+.venv/bin/python -u daily_refresh.py --quiet >> "$LOG" 2>&1
+RC=$?
+set -e
+
+if [ "$RC" -ne 0 ] && [ "$RC" -ne 3 ]; then
+    echo "❌ hood.py failed (exit $RC) — skipping the rest of the chain" >> "$LOG"
     TAIL=$(tail -20 "$LOG")
 
     # Discord webhook
     if [ -n "$DISCORD_WEBHOOK" ]; then
-        MSG="⚠️ **hood.py failed** (exit $EXIT_CODE)\n\`\`\`\n${TAIL:0:1800}\n\`\`\`"
+        MSG="⚠️ **hood.py failed** (exit $RC)\n\`\`\`\n${TAIL:0:1800}\n\`\`\`"
         curl -s -H "Content-Type: application/json" \
             -d "{\"content\": \"$MSG\"}" \
             "$DISCORD_WEBHOOK" > /dev/null 2>&1 || true
@@ -38,39 +43,19 @@ else
 
     # Email failsafe
     if [ -n "$EMAIL" ]; then
-        echo "$TAIL" | mail -s "hood.py failed (exit $EXIT_CODE)" "$EMAIL" 2>/dev/null || true
+        echo "$TAIL" | mail -s "hood.py failed (exit $RC)" "$EMAIL" 2>/dev/null || true
     fi
 
-    exit $EXIT_CODE
+    exit $RC
 fi
 
-# Capture 5m bars for today's option contracts before RH ages them out (~1-2 weeks for 5m).
-# Self-heals: also re-captures any day in the last week that a failed run missed.
-if .venv/bin/python option_intraday.py --json >> "$LOG" 2>&1; then
-    echo "✅ option_intraday.py success" >> "$LOG"
+if [ "$RC" -eq 0 ]; then
+    echo "✅ refresh: all steps ok" >> "$LOG"
 else
-    echo "⚠️ option_intraday.py failed (non-fatal)" >> "$LOG"
+    echo "⚠️ refresh: hood ok, a later step failed (see [STEP] lines above)" >> "$LOG"
 fi
 
-# Run cash flow snapshot
-if .venv/bin/python cash_flow.py --json >> "$LOG" 2>&1; then
-    echo "✅ cash_flow.py success" >> "$LOG"
-else
-    echo "⚠️ cash_flow.py failed (non-fatal)" >> "$LOG"
-fi
-
-# Refresh SPY + VIX daily cache (powers the calendar overlay)
-if .venv/bin/python spy_daily.py --json >> "$LOG" 2>&1; then
-    echo "✅ spy_daily.py success" >> "$LOG"
-else
-    echo "⚠️ spy_daily.py failed (non-fatal)" >> "$LOG"
-fi
-
-# Cache yesterday + today's SPY 5m bars (Polygon free tier; ~30s wall-time)
-if .venv/bin/python spy_intraday.py --json >> "$LOG" 2>&1; then
-    echo "✅ spy_intraday.py success" >> "$LOG"
-else
-    echo "⚠️ spy_intraday.py failed (non-fatal)" >> "$LOG"
-fi
+# Gap days, failed steps, missing option bars → Discord, only when something is off.
+.venv/bin/python health_check.py >> "$LOG" 2>&1 || echo "⚠️ health_check.py failed (non-fatal)" >> "$LOG"
 
 exit 0
