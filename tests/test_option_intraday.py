@@ -277,3 +277,142 @@ class TestMain:
         monkeypatch.setattr(oi, "INSTRUMENT_CACHE_FILE", tmp_path / "cache.json")
         assert oi.main(["--json"]) == 0
         assert json.loads(capsys.readouterr().out) == {"dates": {}, "contracts_fetched": 0}
+
+
+# ── Massive backfill ────────────────────────────
+
+SPY_C = ("SPY", "2026-10-28", "call", 771.0)
+SPY_P = ("SPY", "2026-10-28", "put", 765.0)
+D = date(2026, 10, 28)
+
+
+def mbars(n, day="2026-10-28", start="09:30"):
+    t0 = ts(day, start)
+    return [{"t": t0 + 60 * i, "o": 1.0, "h": 1.1, "l": 0.9, "c": 1.0, "v": 10} for i in range(n)]
+
+
+def rh_entry(key, n, interval="minute"):
+    sym, exp, typ, strike = key
+    return {"instrument_id": "rh-" + typ, "symbol": sym, "type": typ, "strike": strike, "expiry": exp,
+            "interval": interval, "bars": mbars(n)}
+
+
+class TestMassive:
+    def test_occ_ticker(self):
+        assert oi.occ_ticker(SPY_C) == "O:SPY261028C00771000"
+        assert oi.occ_ticker(("ET", "2024-01-19", "put", 13.5)) == "O:ET240119P00013500"
+
+    class Resp:
+        def __init__(self, status, body=None):
+            self.status_code, self._body = status, body or {}
+
+        def json(self):
+            return self._body
+
+    class Session:
+        def __init__(self, *resps):
+            self.resps, self.calls = list(resps), []
+
+        def get(self, url, **kw):
+            self.calls.append((url, kw))
+            return self.resps.pop(0)
+
+    def test_fetch_parses_ms_and_volume(self):
+        t_ms = ts("2026-10-28", "09:30") * 1000
+        s = self.Session(self.Resp(200, {"results": [{"t": t_ms, "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 42}]}))
+        status, bars = oi.fetch_massive("O:SPY261028C00771000", D, "key", session=s)
+        assert status == "ok" and bars == [{"t": t_ms // 1000, "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 42}]
+        url, kw = s.calls[0]
+        assert url.endswith("/O:SPY261028C00771000/range/1/minute/2026-10-28/2026-10-28")
+        assert kw["params"]["apiKey"] == "key"
+
+    def test_fetch_statuses(self):
+        assert oi.fetch_massive("x", D, "k", session=self.Session(self.Resp(200, {"results": []}))) == ("no_data", [])
+        assert oi.fetch_massive("x", D, "k", session=self.Session(self.Resp(403))) == ("out_of_plan", [])
+        with pytest.raises(oi.AuthError):
+            oi.fetch_massive("x", D, "k", session=self.Session(self.Resp(401)))
+        with pytest.raises(RuntimeError):
+            oi.fetch_massive("x", D, "k", session=self.Session(self.Resp(500)))
+
+    def test_fetch_waits_out_a_429(self):
+        slept = []
+        s = self.Session(self.Resp(429), self.Resp(200, {"results": []}))
+        assert oi.fetch_massive("x", D, "k", session=s, sleep=slept.append) == ("no_data", [])
+        assert slept == [60]
+
+    def run_backfill(self, tmp_path, held, answers, **kw):
+        calls = []
+
+        def fetch(ticker, d, key):
+            calls.append((ticker, d))
+            a = answers[ticker]
+            if isinstance(a, Exception):
+                raise a
+            return a
+        summary = oi.backfill(held, kw.pop("index", {}), "key", kw.pop("today", date(2026, 10, 31)),
+                              massive_dir=tmp_path / "m", capture_dir=tmp_path / "c",
+                              log=lambda *_: None, fetch=fetch, sleep=lambda s: None, **kw)
+        return summary, calls
+
+    def test_backfill_records_and_resumes(self, tmp_path):
+        held = {D: {SPY_C, SPY_P}}
+        answers = {"O:SPY261028C00771000": ("ok", mbars(5)), "O:SPY261028P00765000": ("no_data", [])}
+        summary, calls = self.run_backfill(tmp_path, held, answers)
+        assert len(calls) == 2 and summary["no_data"] == 1 and summary["bars"] == 5
+        raw = json.loads((tmp_path / "m" / "2026-10-28.json").read_text())
+        assert raw["contracts"][0]["bars"][0]["v"] == 10 and raw["no_data"][0]["type"] == "put"
+        cap = json.loads((tmp_path / "c" / "2026-10-28.json").read_text())
+        (c,) = cap["contracts"]
+        assert c["source"] == "massive" and c["interval"] == "minute" and c["instrument_id"] == "O:SPY261028C00771000"
+        _, calls = self.run_backfill(tmp_path, held, answers)
+        assert calls == []                      # both answers recorded: nothing asked twice
+
+    def test_errors_and_403_are_retried_next_run(self, tmp_path):
+        held = {D: {SPY_C, SPY_P}}
+        answers = {"O:SPY261028C00771000": RuntimeError("HTTP 500"), "O:SPY261028P00765000": ("out_of_plan", [])}
+        summary, _ = self.run_backfill(tmp_path, held, answers)
+        assert summary["errors"] == 1 and summary["out_of_plan"] == 1
+        _, calls = self.run_backfill(tmp_path, held, answers)
+        assert len(calls) == 2
+
+    def test_window_today_and_limit(self, tmp_path):
+        old, today = date(2024, 1, 5), date(2026, 10, 31)
+        held = {old: {SPY_C}, D: {SPY_C, SPY_P}, today: {SPY_C}}
+        answers = {"O:SPY261028C00771000": ("ok", mbars(1)), "O:SPY261028P00765000": ("ok", mbars(1))}
+        _, calls = self.run_backfill(tmp_path, held, answers, limit=1)
+        assert calls == [("O:SPY261028C00771000", D)]   # outside 2y and today skipped; limit honored
+
+    def test_merge_keeps_more_bars_and_clears_missing(self, tmp_path):
+        (tmp_path / "c").mkdir()
+        (tmp_path / "c" / "2026-10-28.json").write_text(json.dumps({
+            "date": "2026-10-28", "source": "robinhood",
+            "contracts": [rh_entry(SPY_C, 390), rh_entry(SPY_P, 50, "5minute")],
+            "missing": [{"symbol": "SPY", "type": "call", "strike": 770.0, "expiry": "2026-10-28", "reason": "x"}]}))
+        key770 = ("SPY", "2026-10-28", "call", 770.0)
+        held = {D: {SPY_C, SPY_P, key770}}
+        answers = {"O:SPY261028C00771000": ("ok", mbars(380)),     # fewer than RH's 1-minute → RH kept
+                   "O:SPY261028P00765000": ("ok", mbars(200)),     # more than RH's 5-minute → Massive
+                   "O:SPY261028C00770000": ("ok", mbars(30))}      # was missing → now covered
+        self.run_backfill(tmp_path, held, answers, index={SPY_P: "rh-put"})
+        cap = json.loads((tmp_path / "c" / "2026-10-28.json").read_text())
+        by = {(c["type"], c["strike"]): c for c in cap["contracts"]}
+        assert by[("call", 771.0)].get("source", "robinhood") == "robinhood" and len(by[("call", 771.0)]["bars"]) == 390
+        assert by[("put", 765.0)]["source"] == "massive" and by[("put", 765.0)]["instrument_id"] == "rh-put"
+        assert ("call", 770.0) in by and cap["missing"] == []
+        assert cap["source"] == "mixed"
+
+    def test_only_regular_session_is_merged(self, tmp_path):
+        (tmp_path / "c").mkdir()
+        (tmp_path / "c" / "2026-10-28.json").write_text(json.dumps({
+            "date": "2026-10-28", "contracts": [rh_entry(SPY_C, 390)], "missing": []}))
+        # 120 premarket + 380 session + 14 after the close: more bars in total, fewer in the session
+        bars = mbars(120, start="07:30") + mbars(380) + mbars(14, start="16:00")
+        self.run_backfill(tmp_path, {D: {SPY_C}}, {"O:SPY261028C00771000": ("ok", bars)})
+        cap = json.loads((tmp_path / "c" / "2026-10-28.json").read_text())
+        assert len(cap["contracts"][0]["bars"]) == 390 and "source" not in cap["contracts"][0]
+        raw = json.loads((tmp_path / "m" / "2026-10-28.json").read_text())
+        assert len(raw["contracts"][0]["bars"]) == 514          # raw keeps everything
+
+    def test_main_backfill_needs_key(self, monkeypatch):
+        monkeypatch.setattr(oi.spy_intraday, "load_polygon_key", lambda: None)
+        assert oi.main(["--backfill", "--json"]) == 2

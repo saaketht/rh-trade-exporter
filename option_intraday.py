@@ -16,14 +16,27 @@ Modes:
               file is missing or incomplete (5-minute; self-heals after a missed
               run or a dead token)
   --date D    refetch one date (still merges: never replaces good bars with worse)
+  --backfill  history from Massive (Polygon) instead of Robinhood: 1-minute bars WITH
+              volume (RH's volume field is always 0) for every traded contract-day in
+              Massive's ~2-year window, before today. Needs MASSIVE_API_KEY (.env), not
+              the RH token. Free tier = 5 requests/minute, one request per contract-day,
+              so ~900 contract-days take ~3.5 hours; resumable (--since D, --limit N).
+              Raw responses go to outputs/option_massive/{date}.json (the volume record,
+              incl. 07:30–09:30 / 16:00–16:15 prints, and what makes it resumable);
+              each day's regular-session bars are then merged into
+              outputs/option_intraday/ with the same never-fewer-bars rule.
   --json      silent mode, print a JSON summary (cron-friendly)
 
 Output: outputs/option_intraday/{YYYY-MM-DD}.json
   {date, fetched_at, source,
-   contracts: [{instrument_id, symbol, type, strike, expiry, interval, bars: [{t,o,h,l,c}]}],
+   contracts: [{instrument_id, symbol, type, strike, expiry, interval, source, bars: [{t,o,h,l,c[,v]}]}],
    missing: [{symbol, type, strike, expiry, reason}]}
   t is Unix seconds UTC (same as spy_intraday). Gap-fill ("interpolated") bars
-  are dropped — they carry no information.
+  are dropped — they carry no information. source is "robinhood" or "massive";
+  only Massive bars carry v (contracts traded). Massive has no bar for a minute
+  without trades, so an illiquid contract can have fewer 1-minute bars than RH's
+  5-minute capture — the merge then keeps RH's. Entries written before
+  2026-10-31 have no per-contract source (all Robinhood).
 
 Contracts come from spy_trades.csv + other_trades.csv (entry day through exit
 day) and unmatched_opens.csv (entry day through expiry). Instrument ids come
@@ -45,6 +58,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+import spy_intraday
+
 BASE = Path(__file__).resolve().parent
 OUT_DIR = BASE / "outputs"
 CAPTURE_DIR = OUT_DIR / "option_intraday"
@@ -54,6 +69,10 @@ HIST_URL = "https://api.robinhood.com/marketdata/options/historicals/{id}/"
 ET = ZoneInfo("America/New_York")
 CATCHUP_DAYS = 6   # span=week reaches ~7 calendar days back; the 7th is only partly covered
 REQUEST_PAUSE = 0.25
+MASSIVE_DIR = OUT_DIR / "option_massive"
+MASSIVE_URL = "https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/minute/{d}/{d}"
+MASSIVE_PAUSE = 13           # free tier: 5 requests/minute
+MASSIVE_HORIZON_DAYS = 729   # free tier: ~2 years back; older dates return 403
 
 
 class AuthError(Exception):
@@ -169,6 +188,14 @@ def bars_on(bars: list[dict], d: date) -> list[dict]:
     return [b for b in bars if datetime.fromtimestamp(b["t"], ET).date() == d]
 
 
+def regular_session(bars: list[dict]) -> list[dict]:
+    """09:30 ≤ t < 16:00 ET — what RH returns with bounds=regular."""
+    def hm(b):
+        t = datetime.fromtimestamp(b["t"], ET)
+        return t.hour * 60 + t.minute
+    return [b for b in bars if 9 * 60 + 30 <= hm(b) < 16 * 60]
+
+
 # ──────────────────────────────────────────────
 # I/O
 # ──────────────────────────────────────────────
@@ -219,13 +246,21 @@ def captured_keys(doc: dict | None) -> set:
             for c in doc.get("contracts", []) if c.get("bars")}
 
 
+def entry_key(c: dict) -> tuple:
+    return contract_key(c["symbol"], date.fromisoformat(c["expiry"]), c["type"], c["strike"])
+
+
 def merge_contracts(old: list[dict], new: list[dict]) -> list[dict]:
-    """Per contract, keep whichever version has more bars (never downgrade)."""
-    best = {c["instrument_id"]: c for c in old}
+    """Per contract, keep whichever version has more bars (never downgrade).
+
+    Keyed by contract, not instrument id: a Massive entry has no RH id when the
+    instrument cache lacks it. This is the merge rule analysis/prereg/PREREG.md
+    names for the out-of-sample test — don't change it without an amendment."""
+    best = {entry_key(c): c for c in old}
     for c in new:
-        prev = best.get(c["instrument_id"])
+        prev = best.get(entry_key(c))
         if prev is None or len(c["bars"]) > len(prev.get("bars", [])):
-            best[c["instrument_id"]] = c
+            best[entry_key(c)] = c
     return sorted(best.values(), key=lambda c: (c["symbol"], c["expiry"], c["type"], c["strike"]))
 
 
@@ -288,26 +323,183 @@ def run(targets: list[date], held: dict[date, set], index: dict[tuple, str], tok
             if not bars:
                 missing.append({**meta, "reason": "no bars returned (out of reach or no trades)"})
                 continue
-            new.append({"instrument_id": index[key], **meta, "interval": interval, "bars": bars})
-        old = read_day_file(d, capture_dir) or {}
-        contracts = merge_contracts(old.get("contracts", []), new)
-        have = {c["instrument_id"] for c in contracts}
-        missing = [m for m in missing if index.get(contract_key(m["symbol"], date.fromisoformat(m["expiry"]), m["type"], m["strike"])) not in have]
-        doc = {"date": d.isoformat(), "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-               "source": "robinhood", "contracts": contracts, "missing": missing}
-        (capture_dir / f"{d.isoformat()}.json").write_text(json.dumps(doc))
+            new.append({"instrument_id": index[key], **meta, "interval": interval, "source": "robinhood", "bars": bars})
+        doc = write_merged(d, capture_dir, new, missing, "robinhood")
+        contracts, missing = doc["contracts"], doc["missing"]
         n1 = sum(1 for c in contracts if c.get("interval") == "minute")
         summary["dates"][d.isoformat()] = {"contracts": len(contracts), "one_minute": n1, "missing": len(missing)}
         log(f"💾 {d}: {len(contracts)} contracts saved ({n1} at 1-minute), {len(missing)} missing")
     return summary
 
 
+def write_merged(d: date, capture_dir: Path, new: list[dict], missing: list[dict], source: str) -> dict:
+    """Merge new contract entries into the day file (never fewer bars) and save it.
+    A contract that ends up with bars is dropped from `missing`; earlier missing
+    entries are kept until something covers them."""
+    old = read_day_file(d, capture_dir) or {}
+    contracts = merge_contracts(old.get("contracts", []), new)
+    have = {entry_key(c) for c in contracts if c.get("bars")}
+    seen, kept = set(), []
+    for m in missing + old.get("missing", []):
+        k = entry_key(m)
+        if k not in have and k not in seen:
+            seen.add(k)
+            kept.append(m)
+    sources = {c.get("source", "robinhood") for c in contracts}
+    doc = {"date": d.isoformat(), "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+           "source": sources.pop() if len(sources) == 1 else ("mixed" if sources else source),
+           "contracts": contracts, "missing": kept}
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    (capture_dir / f"{d.isoformat()}.json").write_text(json.dumps(doc))
+    return doc
+
+
+# ──────────────────────────────────────────────
+# Massive (Polygon) backfill
+# ──────────────────────────────────────────────
+
+def occ_ticker(key: tuple) -> str:
+    """(SPY, 2026-10-28, call, 771.0) → O:SPY261028C00771000."""
+    sym, exp, typ, strike = key
+    return f"O:{sym}{date.fromisoformat(exp):%y%m%d}{typ[0].upper()}{round(strike * 1000):08d}"
+
+
+def fetch_massive(ticker: str, d: date, api_key: str, session=requests, sleep=time.sleep) -> tuple[str, list]:
+    """One contract-day of 1-minute bars → ("ok", bars) | ("no_data", []) | ("out_of_plan", []).
+    Raises AuthError on a bad key, RuntimeError when it can't get an answer."""
+    url = MASSIVE_URL.format(ticker=ticker, d=d.isoformat())
+    params = {"adjusted": "true", "sort": "asc", "limit": 50000, "apiKey": api_key}
+    for attempt in range(3):
+        try:
+            r = session.get(url, params=params, timeout=30)
+        except requests.RequestException as e:
+            if attempt == 2:
+                raise RuntimeError(f"{type(e).__name__}") from None
+            sleep(5)
+            continue
+        if r.status_code == 429:
+            sleep(60)
+            continue
+        if r.status_code == 401:
+            raise AuthError("HTTP 401 (check MASSIVE_API_KEY)")
+        if r.status_code == 403:
+            return "out_of_plan", []
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        bars = [{"t": int(b["t"] // 1000), "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b.get("v", 0)}
+                for b in r.json().get("results") or []]
+        return ("ok" if bars else "no_data"), bars_on(bars, d)
+    raise RuntimeError("rate-limited 3 times")
+
+
+def backfill(held: dict[date, set], index: dict[tuple, str], api_key: str, today: date,
+             since: date | None = None, limit: int | None = None, massive_dir: Path | None = None,
+             capture_dir: Path | None = None, log=print, fetch=fetch_massive, sleep=time.sleep) -> dict:
+    """Fetch every not-yet-fetched contract-day from Massive, then merge each day into
+    the capture files. "no_data" answers are recorded so they aren't asked again;
+    403s and errors aren't, so a later run retries them."""
+    massive_dir = massive_dir or MASSIVE_DIR
+    capture_dir = capture_dir or CAPTURE_DIR
+    massive_dir.mkdir(parents=True, exist_ok=True)
+    since = max(since or date.min, today - timedelta(days=MASSIVE_HORIZON_DAYS))
+    days = [d for d in sorted(held) if since <= d < today]
+
+    todo = []
+    for d in days:
+        doc = read_day_file(d, massive_dir) or {}
+        done = {entry_key(c) for c in doc.get("contracts", []) + doc.get("no_data", [])}
+        todo += [(d, k) for k in sorted(held[d]) if k not in done]
+    if limit is not None:
+        todo = todo[:limit]
+    log(f"🗓  Massive backfill {since} → {today - timedelta(days=1)}: {len(todo)} contract-days to fetch"
+        f" (~{len(todo) * MASSIVE_PAUSE / 3600:.1f}h at 5/min)")
+
+    summary = {"fetched": 0, "bars": 0, "no_data": 0, "out_of_plan": 0, "errors": 0, "dates": 0}
+    by_day: dict[date, list] = {}
+    for d, k in todo:
+        by_day.setdefault(d, []).append(k)
+    first = True
+    for d in days:
+        if d in by_day:
+            doc = read_day_file(d, massive_dir) or {"contracts": [], "no_data": []}
+            for k in by_day[d]:
+                if not first:
+                    sleep(MASSIVE_PAUSE)
+                first = False
+                sym, exp, typ, strike = k
+                meta = {"ticker": occ_ticker(k), "symbol": sym, "type": typ, "strike": strike, "expiry": exp}
+                try:
+                    status, bars = fetch(meta["ticker"], d, api_key)
+                except RuntimeError as e:
+                    summary["errors"] += 1
+                    log(f"  ⚠ {meta['ticker']} {d}: {e} — will retry next run")
+                    continue
+                summary["fetched"] += 1
+                if status == "ok":
+                    doc["contracts"].append({**meta, "interval": "minute", "bars": bars})
+                    summary["bars"] += len(bars)
+                elif status == "no_data":
+                    doc["no_data"].append(meta)
+                    summary["no_data"] += 1
+                else:
+                    summary["out_of_plan"] += 1
+                log(f"  📈 {meta['ticker']} {d}: {len(bars)} bars" + ("" if status == "ok" else f" ({status})"))
+            doc.update(date=d.isoformat(), source="massive",
+                       fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            (massive_dir / f"{d.isoformat()}.json").write_text(json.dumps(doc))
+        if merge_massive_day(d, index, massive_dir, capture_dir):
+            summary["dates"] += 1
+    return summary
+
+
+def merge_massive_day(d: date, index: dict[tuple, str], massive_dir: Path, capture_dir: Path) -> bool:
+    """Fold a day's Massive bars into its capture file. False when there's nothing to fold.
+
+    Only regular-session bars are folded in. Massive also has 07:30–09:30 and
+    16:00–16:15 prints, and counting those would let a Massive series with gaps in
+    the session "beat" RH's complete 1-minute capture in the never-fewer merge.
+    The raw file keeps every bar."""
+    doc = read_day_file(d, massive_dir)
+    new = []
+    for c in (doc or {}).get("contracts", []):
+        bars = regular_session(c["bars"])
+        if bars:
+            new.append({"instrument_id": index.get(entry_key(c), c["ticker"]),
+                        **{f: c[f] for f in ("symbol", "type", "strike", "expiry", "interval")},
+                        "source": "massive", "bars": bars})
+    if not new:
+        return False
+    write_merged(d, capture_dir, new, [], "massive")
+    return True
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--date", help="Refetch one date (YYYY-MM-DD); merges, never downgrades")
+    p.add_argument("--backfill", action="store_true", help="History from Massive: 1-minute bars with volume")
+    p.add_argument("--since", help="--backfill: earliest date (YYYY-MM-DD); default = Massive's 2-year window")
+    p.add_argument("--limit", type=int, help="--backfill: at most N contract-days this run")
     p.add_argument("--json", action="store_true", help="Silent mode, print summary as JSON")
     a = p.parse_args(argv)
     log = (lambda *_: None) if a.json else print
+
+    if a.backfill:
+        key = spy_intraday.load_polygon_key()
+        if not key:
+            print("❌ No MASSIVE_API_KEY in the environment or .env.", file=sys.stderr)
+            return 2
+        today = datetime.now(ET).date()
+        try:
+            summary = backfill(contracts_by_date(OUT_DIR, today), instrument_index(INSTRUMENT_CACHE_FILE), key,
+                               today, date.fromisoformat(a.since) if a.since else None, a.limit, log=log)
+        except AuthError as e:
+            print(f"❌ Massive rejected the key ({e}).", file=sys.stderr)
+            return 2
+        log(f"✅ {summary['fetched']} fetched ({summary['bars']} bars, {summary['no_data']} with no trades,"
+            f" {summary['out_of_plan']} out of plan), {summary['errors']} errors; {summary['dates']} day files merged")
+        if a.json:
+            print(json.dumps(summary))
+        return 1 if summary["errors"] else 0
 
     token = load_token()
     if not token:
