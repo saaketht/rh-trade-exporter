@@ -445,8 +445,14 @@
   align-items: baseline;
 }
 .leg-meta .urgency-hold { color: #aaa; min-width: 80px; }
+/* Avg entry → exit price lives on the meta line: the head line's summary column
+   is too narrow in the modal for both the time and price pairs. */
+.leg-meta .leg-prices { color: #ccc; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.leg-meta .leg-prices .arrow { color: #555; margin: 0 4px; }
 /* (old fixed-width rule deleted — superseded by flex layout above.) */
-.leg-meta .urgency-tokens { display: inline-flex; gap: 4px; align-items: baseline; }
+/* min-width keeps the price pair after it at one x across rows (a band-crossing
+   hold, "low theta → theta building", is wider and pushes it right). */
+.leg-meta .urgency-tokens { display: inline-flex; gap: 4px; align-items: baseline; min-width: 90px; white-space: nowrap; }
 .leg-meta .band-token { font-weight: 500; }
 .leg-meta .band-token.low      { color: #4ade80; }
 .leg-meta .band-token.building { color: #facc15; }
@@ -866,6 +872,7 @@
     tipEl = document.createElement('div');
     tipEl.id = 'cal-tip';
     tipEl.className = 'cal-tip';
+    tipEl.dataset.viewOwned = 'calendar';   // removed by the shell on view change
     document.body.appendChild(tipEl);
   }
   // Reset stale state from a prior calendar load (e.g. user navigated away while a tip was visible).
@@ -1214,17 +1221,15 @@
 
   // ---------- Intraday-chart helpers (Step 4: Lightweight Charts in day modal) ----------
 
-  // Tiny localStorage helpers — boolean prefs only. Keep keys in one place.
+  // Boolean UI state via the shell's registry (window.UI in index.html), which decides
+  // per key whether it's a lasting preference (localStorage) or per-session (sessionStorage).
   function readPref(key, fallback) {
-    try {
-      const v = localStorage.getItem(key);
-      if (v === null) return fallback;
-      return v === '1' || v === 'true';
-    } catch { return fallback; }
+    const v = window.UI ? UI.get(key) : undefined;
+    return v === undefined || v === null ? fallback : !!v;
   }
-  function writePref(key, val) {
-    try { localStorage.setItem(key, val ? '1' : '0'); } catch {}
-  }
+  function writePref(key, val) { if (window.UI) UI.set(key, !!val); }
+  // Fold state moved to sessionStorage (2026-10-31); drop the old lasting copies once.
+  try { localStorage.removeItem('cal-ic-open'); localStorage.removeItem('cal-cf-open'); } catch {}
 
   // ET-aware session helpers. Uses Intl with America/New_York to avoid hardcoding
   // DST boundaries. NYSE/Arca sessions:
@@ -1505,8 +1510,6 @@
             <span class="leg-contract">SPY ${l.strike}${typeAbbr(l.type)}${qtyAdds}${multiDayTag}</span>
             <span class="leg-summary">
               <span class="atom">${fmtTime(l.startTime)} <span class="arrow">→</span> ${fmtTime(l.endTime)}</span>
-              <span class="sep">·</span>
-              <span class="atom">${fmtPrice(l.avgEntry)} <span class="arrow">→</span> ${fmtPrice(l.avgExit)}</span>
             </span>
             <span class="leg-pl ${plCls}">${fmtPL(l.pl)}${plPctHTML}</span>
             <span class="leg-wl ${wl}">${wl}</span>
@@ -1514,6 +1517,7 @@
           <div class="leg-meta">
             <span class="urgency-hold" data-tip="${urgTip}">🕒 ${fmtHold(l.holdMin)} hold</span>
             <span class="urgency-tokens">${tokensHTML}</span>
+            <span class="leg-prices" data-tip="Average entry → average exit price per contract across this leg's fills.">${fmtPrice(l.avgEntry)} <span class="arrow">→</span> ${fmtPrice(l.avgExit)}</span>
             ${ddText}
           </div>
           <div class="leg-events">${eventsHTML}</div>
@@ -1671,6 +1675,7 @@
       const openAttr = readPref('cal-ic-open', false) ? 'open' : '';
       const ethActive  = readPref('cal-ic-eth',  true) ? 'active' : '';
       const pmhlActive = readPref('cal-ic-pmhl', true) ? 'active' : '';
+      const magnetActive = readPref('cal-ic-magnet', true) ? 'active' : '';
       return `<details class="ic-section" id="ic-section" ${openAttr}>
         <summary class="ic-summary">
           <span class="ic-caret">▶</span>
@@ -1683,14 +1688,14 @@
         <div class="ic-body">
           <div class="ic-toolbar">
             <span class="lbl">Interval</span>
-            <button class="ic-interval-chip active" data-interval="5">5m</button>
-            <button class="ic-interval-chip" data-interval="10">10m</button>
-            <button class="ic-interval-chip" data-interval="15">15m</button>
+            ${[5, 10, 15].map(m => `<button class="ic-interval-chip ${m === intradayInterval ? 'active' : ''}" data-interval="${m}">${m}m</button>`).join('')}
             <span class="lbl" style="margin-left:14px">Show</span>
             <button class="ic-interval-chip ${ethActive}"  data-toggle="eth"
               data-tip="Show extended-hours bars (04:00–09:30 and 16:00–20:00 ET) in addition to the regular session. Off = RTH only.">ETH</button>
             <button class="ic-interval-chip ${pmhlActive}" data-toggle="pmhl"
               data-tip="Draw horizontal lines at the premarket high and low — anchors for level-based 0DTE entries.">PM H/L</button>
+            <button class="ic-interval-chip ${magnetActive}" data-toggle="magnet"
+              data-tip="Crosshair snaps to each candle's close. Off = it follows the mouse freely.">Snap</button>
           </div>
           <div id="ic-mount">
             <div class="ic-loading">Loading intraday data…</div>
@@ -2015,7 +2020,7 @@ Multiple round trips of the same strike inside one continuous hold = one leg wit
     // Mount the chart after every paint, since paint rewrites innerHTML and destroys
     // the chart's container. activeChart is module-level so closeModal() cleans up
     // regardless of which paint installed the chart.
-    let intradayInterval = 5;
+    let intradayInterval = [5, 10, 15].includes(window.UI && UI.get('cal-ic-interval')) ? UI.get('cal-ic-interval') : 10;
     async function getIntradayData() {
       if (intradayCache.has(dateStr)) return intradayCache.get(dateStr);
       const promise = apiFetch('/api/spy/intraday/' + dateStr).catch(() => null);
@@ -2090,12 +2095,16 @@ Multiple round trips of the same strike inside one continuous hold = one leg wit
         timeScale: {
           timeVisible: true, secondsVisible: false, borderColor: '#232633',
           tickMarkFormatter: (t) => fmtETClock(t),
+          // Can't scroll or zoom out past the day's first/last bar.
+          fixLeftEdge: true, fixRightEdge: true,
         },
         localization: {
           timeFormatter: (t) => fmtETDateTime(t) + ' ET',
         },
         rightPriceScale: { borderColor: '#232633' },
-        crosshair: { mode: 1 },
+        // Magnet (snap to close) unless the Snap chip is off. Snapping to O/H/L/C needs
+        // Lightweight Charts v5 (CrosshairMode.MagnetOHLC) — roadmap Step 6.
+        crosshair: { mode: readPref('cal-ic-magnet', true) ? 1 : 0 },
         autoSize: true,
       });
       const UP = '#4ade80', DOWN = '#f87171';
@@ -2129,6 +2138,7 @@ Multiple round trips of the same strike inside one continuous hold = one leg wit
       modalEl.querySelectorAll('.ic-interval-chip[data-interval]').forEach(btn => {
         btn.addEventListener('click', () => {
           intradayInterval = parseInt(btn.dataset.interval, 10);
+          if (window.UI) UI.set('cal-ic-interval', intradayInterval);
           modalEl.querySelectorAll('.ic-interval-chip[data-interval]').forEach(b =>
             b.classList.toggle('active', b.dataset.interval === btn.dataset.interval));
           mountIntradayChart();
@@ -2137,7 +2147,7 @@ Multiple round trips of the same strike inside one continuous hold = one leg wit
       // ETH / PM H/L toggles — flip the pref, mirror to UI, re-mount.
       modalEl.querySelectorAll('.ic-interval-chip[data-toggle]').forEach(btn => {
         btn.addEventListener('click', () => {
-          const key = btn.dataset.toggle === 'eth' ? 'cal-ic-eth' : 'cal-ic-pmhl';
+          const key = { eth: 'cal-ic-eth', pmhl: 'cal-ic-pmhl', magnet: 'cal-ic-magnet' }[btn.dataset.toggle];
           const next = !btn.classList.contains('active');
           btn.classList.toggle('active', next);
           writePref(key, next);

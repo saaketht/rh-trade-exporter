@@ -40,6 +40,35 @@
 const params = new URLSearchParams(window.location.search);
 const TOKEN = params.get('token') || '';
 
+// UI state, one registry for every key so a Settings page (roadmap Step 6) can list and
+// edit the preferences:
+//   prefs   → localStorage: real preferences — survive reloads and new tabs
+//   session → sessionStorage: "what's open right now" — kept across reloads in this tab,
+//             reset in a new one
+// Values are JSON; a non-JSON legacy string comes back as-is. Older keys in the views
+// (overlays, spans, KPI groups…) still use localStorage directly — move them here in Step 6.
+window.UI = (() => {
+  const KEYS = {
+    'cal-ic-interval': { store: 'prefs',   default: 10,    label: 'Intraday candle size (minutes)' },
+    'cal-ic-eth':      { store: 'prefs',   default: true,  label: 'Show extended-hours bars' },
+    'cal-ic-pmhl':     { store: 'prefs',   default: true,  label: 'Show premarket high/low' },
+    'cal-ic-magnet':   { store: 'prefs',   default: true,  label: 'Crosshair snaps to candle prices' },
+    'cal-ic-open':     { store: 'session', default: false, label: 'Intraday chart expanded' },
+    'cal-cf-open':     { store: 'session', default: false, label: 'Cash-flow section expanded' },
+    'an-equity-mode':  { store: 'prefs',   default: 'daily', label: 'Equity curve mode' },
+  };
+  const area = k => (KEYS[k] && KEYS[k].store === 'session') ? sessionStorage : localStorage;
+  function get(k) {
+    const def = KEYS[k] ? KEYS[k].default : undefined;
+    let raw = null;
+    try { raw = area(k).getItem(k); } catch (e) { return def; }
+    if (raw === null) return def;
+    try { return JSON.parse(raw); } catch (e) { return raw; }
+  }
+  function set(k, v) { try { area(k).setItem(k, JSON.stringify(v)); } catch (e) {} }
+  return { KEYS, get, set };
+})();
+
 // P/L basis for every trade endpoint: "net" (after fees, the default) or "gross".
 // The server swaps the numbers, so views never need to know which one they got.
 let PL_BASIS = 'net';
@@ -73,24 +102,36 @@ async function loadView(name) {
     t.classList.toggle('active', t.dataset.view === name);
   });
 
+  // Views that append elements to <body> (e.g. the calendar's floating tooltip) mark them
+  // data-view-owned. Their CSS lives in the view, so once the view is gone they'd render
+  // as unstyled text at the bottom of the page — remove them on every view change.
+  document.querySelectorAll('body > [data-view-owned]').forEach(el => el.remove());
+
   const app = document.getElementById('app');
   app.innerHTML = '<div class="loading">Loading...</div>';
 
   try {
-    const resp = await fetch('/static/views/' + name + '.html');
+    // no-cache = revalidate every time (cheap ETag check), so an updated view is picked up
+    // right away instead of the browser serving a stale fragment after a pull/deploy.
+    const resp = await fetch('/static/views/' + name + '.html', { cache: 'no-cache' });
     if (!resp.ok) throw new Error('Failed to load view');
     app.innerHTML = await resp.text();
 
-    // Execute scripts in the loaded fragment
-    app.querySelectorAll('script').forEach(old => {
+    // Execute scripts in the loaded fragment, in order. Injected external scripts are
+    // async, so wait for each to load before running the inline code that uses it
+    // (Trade Log threw `agGrid is not defined` on a cold cache without this).
+    for (const old of [...app.querySelectorAll('script')]) {
       const s = document.createElement('script');
       if (old.src) {
+        const loaded = new Promise((res, rej) => { s.onload = res; s.onerror = () => rej(new Error('script failed: ' + old.src)); });
         s.src = old.src;
+        old.replaceWith(s);
+        await loaded;
       } else {
         s.textContent = old.textContent;
+        old.replaceWith(s);
       }
-      old.replaceWith(s);
-    });
+    }
   } catch (e) {
     app.innerHTML = '<div class="loading" style="color:#f87171">Failed to load view: ' + e.message + '</div>';
   }

@@ -154,7 +154,7 @@
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
       <h2 style="margin-bottom:0">Equity Curve</h2>
       <div class="tabs" style="margin-bottom:0" id="equity-tabs">
-        <div class="tab active" data-mode="cumulative">Cumulative</div>
+        <div class="tab" data-mode="cumulative">Cumulative</div>
         <div class="tab" data-mode="daily">Daily P/L</div>
       </div>
     </div>
@@ -586,7 +586,9 @@
     const dailyCumSeries = dailyPLSeries.map(v => { dailyCum += v; return dailyCum; });
 
     let equityChart = null;
-    let equityMode = 'cumulative';
+    // Mode is a saved preference (default Daily P/L). Read it on every rerender so a span
+    // or symbol change keeps the chart and the active tab in sync.
+    let equityMode = (window.UI && UI.get('an-equity-mode')) === 'cumulative' ? 'cumulative' : 'daily';
 
     function renderEquity() {
       if (equityChart) { equityChart.destroy(); charts.splice(charts.indexOf(equityChart), 1); }
@@ -626,14 +628,16 @@
     }
     renderEquity();
 
-    // Bind equity toggle tabs
+    // Equity toggle tabs. onclick (not addEventListener) because this runs on every
+    // rerender — listeners used to stack and fire stale closures.
     document.querySelectorAll('#equity-tabs .tab').forEach(t => {
-      t.addEventListener('click', () => {
-        document.querySelectorAll('#equity-tabs .tab').forEach(x => x.classList.remove('active'));
-        t.classList.add('active');
+      t.classList.toggle('active', t.dataset.mode === equityMode);
+      t.onclick = () => {
+        document.querySelectorAll('#equity-tabs .tab').forEach(x => x.classList.toggle('active', x === t));
         equityMode = t.dataset.mode;
+        if (window.UI) UI.set('an-equity-mode', equityMode);
         renderEquity();
-      });
+      };
     });
 
     // 2. Monthly P/L
